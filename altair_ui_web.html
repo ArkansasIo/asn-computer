@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ALTAIR 8800 Emulator - Interactive Web Interface</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background-color: #0a0a0a;
+            color: #00FF00;
+            font-family: 'Courier New', monospace;
+            overflow-x: hidden;
+            line-height: 1.4;
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 20px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+        
+        .panel {
+            background-color: #1a1a1a;
+            border: 2px solid #00FF00;
+            border-radius: 5px;
+            padding: 20px;
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+        }
+        
+        .panel-title {
+            font-size: 16px;
+            font-weight: bold;
+            text-align: center;
+            margin-bottom: 20px;
+            text-decoration: underline;
+            text-shadow: 0 0 10px #00FF00;
+        }
+        
+        .section {
+            margin: 20px 0;
+            border: 1px solid #333;
+            padding: 12px;
+            border-radius: 3px;
+        }
+        
+        .section-title {
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #FFFF00;
+            text-transform: uppercase;
+        }
+        
+        /* LED Display */
+        .led-container {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        
+        .led {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 1px solid #00FF00;
+            background-color: #001a00;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        
+        .led.on {
+            background-color: #00FF00;
+            box-shadow: 0 0 10px #00FF00;
+        }
+        
+        .led-label {
+            font-size: 10px;
+            text-align: center;
+            margin-top: 3px;
+            color: #00CC00;
+        }
+        
+        /* Digital Displays */
+        .digital-display {
+            background-color: #0a0a0a;
+            border: 2px solid #00FF00;
+            padding: 10px;
+            margin: 8px 0;
+            font-size: 14px;
+            font-weight: bold;
+            font-family: 'Courier New', monospace;
+            text-align: center;
+            word-break: break-all;
+        }
+        
+        /* Switches */
+        .switch-container {
+            display: flex;
+            gap: 3px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        
+        .switch {
+            width: 25px;
+            height: 35px;
+            background-color: #330000;
+            border: 1px solid #00FF00;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 9px;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+        
+        .switch:hover {
+            box-shadow: 0 0 5px #00FF00;
+        }
+        
+        .switch.on {
+            background-color: #00FF00;
+            color: #000000;
+        }
+        
+        /* Buttons */
+        .button-container {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin: 15px 0;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: 2px solid #00FF00;
+            background-color: #1a1a1a;
+            color: #00FF00;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 3px;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            font-size: 11px;
+        }
+        
+        .btn:hover {
+            background-color: #00FF00;
+            color: #000000;
+            box-shadow: 0 0 10px #00FF00;
+        }
+        
+        .btn.power {
+            border-color: #FF0000;
+            color: #FF0000;
+        }
+        
+        .btn.power.on {
+            background-color: #FF0000;
+            color: #FFFFFF;
+        }
+        
+        .btn.run {
+            border-color: #00FF00;
+        }
+        
+        .btn.halt {
+            border-color: #FFFF00;
+            color: #FFFF00;
+        }
+        
+        .btn.reset {
+            border-color: #FF00FF;
+            color: #FF00FF;
+        }
+        
+        /* Status Indicators */
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin: 10px 0;
+        }
+        
+        .status-item {
+            background-color: #0a0a0a;
+            border: 1px solid #333;
+            padding: 8px;
+            text-align: center;
+            border-radius: 3px;
+        }
+        
+        .status-item .label {
+            font-size: 9px;
+            color: #888;
+            margin-bottom: 4px;
+        }
+        
+        .status-item .value {
+            font-size: 12px;
+            font-weight: bold;
+            color: #00FF00;
+            font-family: monospace;
+        }
+        
+        .status-item .value.error {
+            color: #FF0000;
+        }
+        
+        /* Backplane Canvas */
+        .backplane-canvas {
+            width: 100%;
+            background-color: #0a0a0a;
+            border: 2px solid #00FF00;
+            border-radius: 3px;
+            min-height: 400px;
+        }
+        
+        /* Component Status */
+        .component-status {
+            background-color: #0a0a0a;
+            border: 1px solid #333;
+            padding: 10px;
+            font-size: 11px;
+            line-height: 1.6;
+            max-height: 150px;
+            overflow-y: auto;
+            border-radius: 3px;
+        }
+        
+        .component-status .system {
+            color: #00FF00;
+        }
+        
+        .component-status .active {
+            color: #00FF00;
+        }
+        
+        .component-status .inactive {
+            color: #666;
+        }
+        
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        /* Animations */
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0.3; }
+        }
+        
+        .blink {
+            animation: blink 1s infinite;
+        }
+        
+        .boot-animation {
+            animation: pulse 0.5s ease-in-out;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        /* Architecture Diagram */
+        svg {
+            width: 100%;
+            height: auto;
+        }
+        
+        .component-box {
+            fill: none;
+            stroke: #00FF00;
+            stroke-width: 2;
+        }
+        
+        .component-box.active {
+            fill: #003300;
+            stroke: #FFFF00;
+        }
+        
+        .component-label {
+            fill: #00FF00;
+            font-size: 12px;
+            font-family: 'Courier New', monospace;
+            text-anchor: middle;
+        }
+        
+        .bus-line {
+            stroke: #00FF00;
+            stroke-width: 2;
+            fill: none;
+        }
+        
+        .bus-line.active {
+            stroke: #FFFF00;
+            stroke-width: 3;
+        }
+        
+        .connection {
+            stroke: #666;
+            stroke-width: 1;
+            fill: none;
+            stroke-dasharray: 4,4;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- FRONT PANEL -->
+        <div class="panel">
+            <div class="panel-title">╔═══════════════════════╗<br>║  ALTAIR 8800 PANEL  ║<br>╚═══════════════════════╝</div>
+            
+            <!-- Address Bus -->
+            <div class="section">
+                <div class="section-title">Address Bus (16-bit)</div>
+                <div class="led-container" id="addressBusLEDs">
+                    <!-- Generated by JavaScript -->
+                </div>
+                <div class="digital-display" id="addressDisplay">0x0000</div>
+            </div>
+            
+            <!-- Data Bus -->
+            <div class="section">
+                <div class="section-title">Data Bus (8-bit)</div>
+                <div class="led-container" id="dataBusLEDs">
+                    <!-- Generated by JavaScript -->
+                </div>
+                <div class="digital-display" id="dataDisplay">0x00</div>
+            </div>
+            
+            <!-- Status LEDs -->
+            <div class="section">
+                <div class="section-title">Status Indicators</div>
+                <div class="status-grid">
+                    <div class="status-item">
+                        <div class="label">POWER</div>
+                        <div id="powerLED" class="led"></div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">HALT</div>
+                        <div id="haltLED" class="led"></div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">WAIT</div>
+                        <div id="waitLED" class="led"></div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">INT</div>
+                        <div id="intLED" class="led"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- CPU Registers -->
+            <div class="section">
+                <div class="section-title">CPU Registers</div>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px;">
+                    <div class="digital-display" style="font-size: 11px;">A: <span id="regA">0x00</span></div>
+                    <div class="digital-display" style="font-size: 11px;">B: <span id="regB">0x00</span></div>
+                    <div class="digital-display" style="font-size: 11px;">C: <span id="regC">0x00</span></div>
+                    <div class="digital-display" style="font-size: 11px;">D: <span id="regD">0x00</span></div>
+                    <div class="digital-display" style="font-size: 11px;">E: <span id="regE">0x00</span></div>
+                    <div class="digital-display" style="font-size: 11px;">H: <span id="regH">0x00</span></div>
+                    <div class="digital-display" style="font-size: 11px;">L: <span id="regL">0x00</span></div>
+                    <div class="digital-display" style="font-size: 11px;">F: <span id="regF">0x00</span></div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
+                    <div class="digital-display">PC: <span id="regPC">0x0000</span></div>
+                    <div class="digital-display">SP: <span id="regSP">0x8000</span></div>
+                </div>
+            </div>
+            
+            <!-- Toggle Switches -->
+            <div class="section">
+                <div class="section-title">Toggle Switches (16)</div>
+                <div class="switch-container" id="switchContainer">
+                    <!-- Generated by JavaScript -->
+                </div>
+            </div>
+            
+            <!-- Control Buttons -->
+            <div class="button-container">
+                <button class="btn power" id="powerBtn" onclick="togglePower()">Power On</button>
+                <button class="btn run" onclick="runProgram()">Run</button>
+                <button class="btn halt" onclick="haltProgram()">Halt</button>
+                <button class="btn reset" onclick="resetSystem()">Reset</button>
+            </div>
+        </div>
+        
+        <!-- BACKPLANE ARCHITECTURE -->
+        <div class="panel">
+            <div class="panel-title">╔═════════════════════════════╗<br>║ BACKPLANE ARCHITECTURE     ║<br>╚═════════════════════════════╝</div>
+            
+            <svg id="backplaneCanvas" class="backplane-canvas" viewBox="0 0 500 700">
+                <!-- CPU -->
+                <rect x="200" y="50" width="100" height="50" class="component-box active"/>
+                <text x="250" y="82" class="component-label">CPU</text>
+                <text x="250" y="95" class="component-label" style="font-size: 10px;">Intel 8080</text>
+                
+                <!-- Memory -->
+                <rect x="30" y="150" width="90" height="60" class="component-box"/>
+                <text x="75" y="185" class="component-label">RAM</text>
+                <text x="75" y="198" class="component-label" style="font-size: 10px;">64 KB</text>
+                
+                <rect x="380" y="150" width="90" height="60" class="component-box"/>
+                <text x="425" y="185" class="component-label">ROM</text>
+                <text x="425" y="198" class="component-label" style="font-size: 10px;">8 KB</text>
+                
+                <!-- Bus Connections -->
+                <line x1="250" y1="100" x2="75" y2="150" class="connection"/>
+                <line x1="250" y1="100" x2="425" y2="150" class="connection"/>
+                
+                <!-- Address Decoder -->
+                <rect x="10" y="260" width="110" height="50" class="component-box"/>
+                <text x="65" y="290" class="component-label">Address</text>
+                <text x="65" y="303" class="component-label" style="font-size: 10px;">Decoder</text>
+                
+                <!-- Data Control -->
+                <rect x="380" y="260" width="110" height="50" class="component-box"/>
+                <text x="435" y="290" class="component-label">Data</text>
+                <text x="435" y="303" class="component-label" style="font-size: 10px;">Control</text>
+                
+                <!-- Peripheral I/O -->
+                <rect x="20" y="360" width="60" height="50" class="component-box"/>
+                <text x="50" y="390" class="component-label" style="font-size: 11px;">Serial</text>
+                
+                <rect x="90" y="360" width="60" height="50" class="component-box"/>
+                <text x="120" y="390" class="component-label" style="font-size: 11px;">Parallel</text>
+                
+                <rect x="160" y="360" width="60" height="50" class="component-box"/>
+                <text x="190" y="390" class="component-label" style="font-size: 11px;">Disk</text>
+                
+                <rect x="230" y="360" width="60" height="50" class="component-box"/>
+                <text x="260" y="390" class="component-label" style="font-size: 11px;">Keyboard</text>
+                
+                <rect x="300" y="360" width="60" height="50" class="component-box"/>
+                <text x="330" y="390" class="component-label" style="font-size: 11px;">Display</text>
+                
+                <rect x="370" y="360" width="60" height="50" class="component-box"/>
+                <text x="400" y="390" class="component-label" style="font-size: 11px;">Timer</text>
+                
+                <!-- System Bus -->
+                <line x1="10" y1="320" x2="490" y2="320" class="bus-line"/>
+                <line x1="10" y1="330" x2="490" y2="330" class="bus-line"/>
+                
+                <!-- DMA & Interrupt -->
+                <rect x="100" y="450" width="100" height="50" class="component-box"/>
+                <text x="150" y="480" class="component-label">DMA</text>
+                
+                <rect x="300" y="450" width="100" height="50" class="component-box"/>
+                <text x="350" y="480" class="component-label">Interrupt</text>
+                
+                <!-- Power & Control -->
+                <rect x="60" y="560" width="80" height="40" class="component-box"/>
+                <text x="100" y="585" class="component-label">Power</text>
+                
+                <rect x="200" y="560" width="80" height="40" class="component-box"/>
+                <text x="240" y="585" class="component-label">Clock</text>
+                
+                <rect x="340" y="560" width="80" height="40" class="component-box"/>
+                <text x="380" y="585" class="component-label">Boot</text>
+            </svg>
+            
+            <!-- Component Status -->
+            <div class="section" style="margin-top: 15px;">
+                <div class="section-title">Component Status</div>
+                <div class="component-status" id="componentStatus">
+                    <div><span class="system">CPU Status:</span> <span id="cpuStatus" class="inactive">STANDBY</span></div>
+                    <div><span class="system">Memory:</span> <span id="memStatus" class="inactive">OFFLINE</span></div>
+                    <div><span class="system">Bus:</span> <span id="busStatus" class="inactive">IDLE</span></div>
+                    <div><span class="system">I/O:</span> <span id="ioStatus" class="inactive">DISABLED</span></div>
+                    <div style="margin-top: 10px;"><span class="system">Active Components:</span>
+                    <div id="activeComponents" style="margin-left: 10px; font-size: 10px;">None</div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Emulator state
+        const state = {
+            power: false,
+            running: false,
+            halt: false,
+            addressBus: 0x0000,
+            dataBus: 0x00,
+            registers: {
+                A: 0x00, B: 0x00, C: 0x00, D: 0x00,
+                E: 0x00, H: 0x00, L: 0x00, F: 0x00
+            },
+            pc: 0x0000,
+            sp: 0x8000,
+            switches: new Array(16).fill(0)
+        };
+        
+        // Initialize UI
+        function initializeUI() {
+            // Create address bus LEDs
+            const addressContainer = document.getElementById('addressBusLEDs');
+            for (let i = 15; i >= 0; i--) {
+                const led = document.createElement('div');
+                led.className = 'led';
+                led.id = `addr_${i}`;
+                addressContainer.appendChild(led);
+            }
+            
+            // Create data bus LEDs
+            const dataContainer = document.getElementById('dataBusLEDs');
+            for (let i = 7; i >= 0; i--) {
+                const led = document.createElement('div');
+                led.className = 'led';
+                led.id = `data_${i}`;
+                dataContainer.appendChild(led);
+            }
+            
+            // Create switches
+            const switchContainer = document.getElementById('switchContainer');
+            for (let i = 15; i >= 0; i--) {
+                const sw = document.createElement('div');
+                sw.className = 'switch';
+                sw.textContent = i.toString(16).toUpperCase();
+                sw.id = `switch_${i}`;
+                sw.onclick = () => toggleSwitch(i);
+                switchContainer.appendChild(sw);
+            }
+        }
+        
+        // Toggle power
+        function togglePower() {
+            state.power = !state.power;
+            const btn = document.getElementById('powerBtn');
+            const led = document.getElementById('powerLED');
+            
+            if (state.power) {
+                btn.textContent = 'Power Off';
+                btn.classList.add('on');
+                led.classList.add('on');
+                document.getElementById('cpuStatus').textContent = 'ACTIVE';
+                document.getElementById('cpuStatus').className = 'active';
+                document.getElementById('memStatus').textContent = 'OPERATIONAL';
+                document.getElementById('memStatus').className = 'active';
+                document.getElementById('ioStatus').textContent = 'ENABLED';
+                document.getElementById('ioStatus').className = 'active';
+            } else {
+                btn.textContent = 'Power On';
+                btn.classList.remove('on');
+                led.classList.remove('on');
+                state.running = false;
+                document.getElementById('cpuStatus').textContent = 'STANDBY';
+                document.getElementById('cpuStatus').className = 'inactive';
+                document.getElementById('memStatus').textContent = 'OFFLINE';
+                document.getElementById('memStatus').className = 'inactive';
+                document.getElementById('ioStatus').textContent = 'DISABLED';
+                document.getElementById('ioStatus').className = 'inactive';
+            }
+        }
+        
+        function runProgram() {
+            if (!state.power) {
+                alert('Power is OFF. Turn on power first!');
+                return;
+            }
+            state.running = true;
+            document.getElementById('busStatus').textContent = 'ACTIVE';
+            document.getElementById('busStatus').className = 'active';
+        }
+        
+        function haltProgram() {
+            state.halt = true;
+            state.running = false;
+            document.getElementById('haltLED').classList.add('on');
+            document.getElementById('busStatus').textContent = 'HALTED';
+            document.getElementById('busStatus').className = 'inactive';
+        }
+        
+        function resetSystem() {
+            state.running = false;
+            state.halt = false;
+            state.addressBus = 0x0000;
+            state.dataBus = 0x00;
+            state.pc = 0x0000;
+            for (let reg in state.registers) {
+                state.registers[reg] = 0x00;
+            }
+            document.getElementById('haltLED').classList.remove('on');
+            document.getElementById('busStatus').textContent = 'IDLE';
+            document.getElementById('busStatus').className = 'inactive';
+        }
+        
+        function toggleSwitch(index) {
+            state.switches[index] = 1 - state.switches[index];
+            const sw = document.getElementById(`switch_${index}`);
+            if (state.switches[index]) {
+                sw.classList.add('on');
+            } else {
+                sw.classList.remove('on');
+            }
+        }
+        
+        // Animation loop
+        function updateDisplay() {
+            if (state.power) {
+                // Simulate address bus
+                if (state.running) {
+                    state.addressBus = (state.addressBus + 1) & 0xFFFF;
+                    state.pc = (state.pc + 1) & 0xFFFF;
+                } else {
+                    state.addressBus = Math.floor(Math.random() * 0x10000);
+                }
+                
+                // Update address LEDs
+                for (let i = 0; i < 16; i++) {
+                    const bit = (state.addressBus >> (15 - i)) & 1;
+                    const led = document.getElementById(`addr_${i}`);
+                    if (bit) {
+                        led.classList.add('on');
+                    } else {
+                        led.classList.remove('on');
+                    }
+                }
+                
+                // Simulate data bus
+                if (state.running) {
+                    state.dataBus = (state.dataBus + 17) & 0xFF;
+                } else {
+                    state.dataBus = Math.floor(Math.random() * 256);
+                }
+                
+                // Update data LEDs
+                for (let i = 0; i < 8; i++) {
+                    const bit = (state.dataBus >> (7 - i)) & 1;
+                    const led = document.getElementById(`data_${i}`);
+                    if (bit) {
+                        led.classList.add('on');
+                    } else {
+                        led.classList.remove('on');
+                    }
+                }
+                
+                // Update registers if running
+                if (state.running) {
+                    for (let reg in state.registers) {
+                        state.registers[reg] = (state.registers[reg] + 1) & 0xFF;
+                    }
+                }
+            }
+            
+            // Update displays
+            document.getElementById('addressDisplay').textContent = `0x${state.addressBus.toString(16).toUpperCase().padStart(4, '0')}`;
+            document.getElementById('dataDisplay').textContent = `0x${state.dataBus.toString(16).toUpperCase().padStart(2, '0')}`;
+            document.getElementById('regPC').textContent = `0x${state.pc.toString(16).toUpperCase().padStart(4, '0')}`;
+            
+            for (let reg in state.registers) {
+                document.getElementById(`reg${reg}`).textContent = `0x${state.registers[reg].toString(16).toUpperCase().padStart(2, '0')}`;
+            }
+            
+            requestAnimationFrame(updateDisplay);
+        }
+        
+        // Start
+        initializeUI();
+        updateDisplay();
+    </script>
+</body>
+</html>

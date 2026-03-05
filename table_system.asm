@@ -1,767 +1,1124 @@
-; ============================================================================
-; ALTAIR 8800 TABLE SYSTEM (SPREADSHEET/GRID)
-; Front-end Table Display and Manipulation
-; ============================================================================
+; =============================================================================
+; TABLE SYSTEM - Spreadsheet/Grid Display and Manipulation
+; =============================================================================
+; Purpose: 80x24 character grid, cell editing, sorting, searching
+; Author: Altair 8800 OS Development Team
+; Date: March 4, 2026
+; Version: 1.0
+; Lines: 850+
+; =============================================================================
 
-.code
+option casemap:none
+EXTERN ExitProcess:PROC
 
-extern GetStdHandle:proc
-extern WriteConsoleA:proc
-extern ReadConsoleA:proc
-extern SetConsoleCursorPosition:proc
+; =============================================================================
+; CONSTANTS
+; =============================================================================
 
-; ============================================================================
-; TABLE SYSTEM CONSTANTS
-; ============================================================================
+; Grid dimensions
+GRID_ROWS               EQU 24
+GRID_COLS               EQU 80
+CELL_WIDTH              EQU 10
+CELL_HEIGHT             EQU 1
+
+; Cell data
+CELL_DATA_SIZE          EQU 64
+GRID_MAX_CELLS          EQU GRID_ROWS * GRID_COLS
+
+; Keys
+KEY_UP                  EQU 72
+KEY_DOWN                EQU 80
+KEY_LEFT                EQU 75
+KEY_RIGHT               EQU 77
+KEY_TAB                 EQU 9
+KEY_ENTER               EQU 13
+KEY_ESCAPE              EQU 27
+
+; =============================================================================
+; DATA SECTION
+; =============================================================================
 
 .data
 
-; Grid display constants
-GRID_MAX_WIDTH          equ 80          ; Max columns in display
-GRID_MAX_HEIGHT         equ 24          ; Max rows in display
-GRID_CELL_WIDTH         equ 10          ; Width of each cell
-GRID_CELL_HEIGHT        equ 1           ; Height of each cell
+moduleName              db "table_system", 0
+version_str             db "1.0", 0
 
-; Cell types
-CELL_TYPE_TEXT          equ 0x01
-CELL_TYPE_NUMBER        equ 0x02
-CELL_TYPE_FORMULA       equ 0x03
-CELL_TYPE_EMPTY         equ 0x00
+; Grid storage
+grid_data               db GRID_MAX_CELLS * CELL_DATA_SIZE dup(0)
+grid_rows               dd GRID_ROWS
+grid_cols               dd GRID_COLS
 
-; ============================================================================
-; SPREADSHEET STRUCTURE (16 bytes per cell)
-; ============================================================================
-; 0x00: Data (8 bytes)
-; 0x08: Type (1 byte)
-; 0x09: Format (1 byte)
-; 0x0A: Flags (1 byte)
-; 0x0B: Reserved (5 bytes)
+; Display state
+current_row             dd 0
+current_col             dd 0
+selected_row            dd 0
+selected_col            dd 0
+edit_mode               dd 0
 
-spreadsheet_data:       db 20480 dup(0) ; 80×256 cells × 16 bytes
-cell_count:             dd 0
-first_pass:             db 1
+; Cell buffers
+cell_buffer             db 64 dup(0)
+input_buffer            db 256 dup(0)
+search_buffer           db 64 dup(0)
 
-; Grid state
-current_grid_row:       dd 0
-current_grid_col:       dd 0
-grid_top_row:           dd 0
-grid_left_col:          dd 0
-selected_cell_row:      dd 0
-selected_cell_col:      dd 0
+; Status/Title
+grid_title              db "SPREADSHEET VIEW", 0
+status_message          db "Use arrows to navigate, Tab/Shift+Tab to move, ENTER to edit", 0
 
-; Cell editing
-edit_mode:              db 0
-edit_buffer:            db 64 dup(0)
-formula_buffer:         db 256 dup(0)
+; Column headers
+column_headers          db "A         B         C         D         E         F         G         H         ", 0
 
-; ============================================================================
-; CREATE SPREADSHEET
-; ============================================================================
+; Sort state
+sort_column             dd 0
+sort_ascending          dd 1
 
-create_spreadsheet:
-    ; Input: RCX = rows, RDX = columns
-    ; Output: none
+; Display buffer (80x24)
+display_buffer          db 1920 dup(0)
+
+; =============================================================================
+; CODE SECTION
+; =============================================================================
+
+.code
+
+; =============================================================================
+; INITIALIZATION
+; =============================================================================
+
+create_spreadsheet PROC
+    ; Create a new spreadsheet
+    ; Input: ECX = rows
+    ;        EDX = columns
+    ; Output: EAX = spreadsheet_id
     
-    push rbp
-    mov rbp, rsp
+    push rbx
+    push rcx
+    push rdx
+    push rdi
     
-    ; Store dimensions
-    mov [current_grid_row], rcx
-    mov [current_grid_col], rdx
-    mov [grid_top_row], dword 0
-    mov [grid_left_col], dword 0
-    mov [selected_cell_row], dword 0
-    mov [selected_cell_col], dword 0
+    ; Store grid dimensions
+    mov dword ptr [grid_rows], ecx
+    mov dword ptr [grid_cols], edx
     
-    ; Initialize spreadsheet
-    mov rax, 0
-    mov rcx, rdx
-    imul rcx, rax                       ; Total cells
-    imul rcx, 16                        ; Bytes per cell
+    ; Initialize grid data
+    mov rdi, offset grid_data
+    mov rcx, GRID_MAX_CELLS * CELL_DATA_SIZE
+    xor al, al
+    rep stosb
     
-    xor r8, r8
+    ; Initialize cursor position
+    mov dword ptr [current_row], 0
+    mov dword ptr [current_col], 0
+    mov dword ptr [selected_row], 0
+    mov dword ptr [selected_col], 0
+    mov dword ptr [edit_mode], 0
     
-init_cells:
-    cmp r8, rcx
-    jge spreadsheet_ready
+    mov eax, 1                      ; Spreadsheet ID = 1
     
-    mov byte ptr [spreadsheet_data + r8], CELL_TYPE_EMPTY
-    add r8, 16
-    jmp init_cells
-    
-spreadsheet_ready:
-    pop rbp
+    pop rdi
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+create_spreadsheet ENDP
 
-; ============================================================================
-; SET CELL VALUE
-; ============================================================================
+; =============================================================================
+; CELL OPERATIONS
+; =============================================================================
 
-set_cell:
-    ; Input: RCX = row, RDX = column
-    ;        R8  = data pointer, R9D = size
-    ; Output: AL = 1 (success), 0 (failure)
+set_cell PROC
+    ; Set cell data
+    ; Input: ECX = row
+    ;        EDX = column
+    ;        R8 = pointer to data
+    ;        R9 = data size
+    ; Output: EAX = status (0 = success)
     
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
     
-    ; Calculate cell offset
+    ; Validate bounds
+    cmp ecx, dword ptr [grid_rows]
+    jge set_cell_error
+    cmp edx, dword ptr [grid_cols]
+    jge set_cell_error
+    
+    ; Calculate cell position
     mov rax, rcx
-    mov r10, [current_grid_col]
-    imul rax, r10
+    imul rax, rax, dword ptr [grid_cols]
     add rax, rdx
-    imul rax, 16                        ; 16 bytes per cell
+    imul rax, rax, CELL_DATA_SIZE
+    mov rbx, offset grid_data
+    add rbx, rax
     
-    ; Check bounds
-    cmp rax, 20480
-    jge cell_set_fail
+    ; Copy data to cell
+    mov rdi, rbx
+    mov rsi, r8
+    mov rcx, r9
+    cmp rcx, CELL_DATA_SIZE
+    jle copy_cell_size_ok
+    mov rcx, CELL_DATA_SIZE
     
-    ; Store data type
-    mov byte ptr [spreadsheet_data + rax], CELL_TYPE_TEXT
+copy_cell_size_ok:
+    rep movsb
     
-    ; Copy data
-    mov r10, 0
+    xor eax, eax
+    jmp set_cell_done
     
-copy_cell_data:
-    cmp r10d, r9d
-    jge cell_set_success
-    cmp r10d, 8
-    jge cell_set_success
+set_cell_error:
+    mov eax, -1
     
-    mov bl, [r8 + r10]
-    mov [spreadsheet_data + rax + 1 + r10], bl
-    inc r10
-    jmp copy_cell_data
-    
-cell_set_success:
-    mov al, 1
-    jmp cell_set_done
-    
-cell_set_fail:
-    mov al, 0
-    
-cell_set_done:
-    add rsp, 32
-    pop rbp
+set_cell_done:
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+set_cell ENDP
 
-; ============================================================================
-; GET CELL VALUE
-; ============================================================================
-
-get_cell:
-    ; Input: RCX = row, RDX = column
-    ; Output: RAX = data pointer (in spreadsheet), EBX = type
+get_cell PROC
+    ; Get cell data
+    ; Input: ECX = row
+    ;        EDX = column
+    ; Output: RAX = pointer to cell data
     
-    push rbp
-    mov rbp, rsp
+    push rbx
+    push rcx
+    push rdx
     
-    ; Calculate offset
+    ; Validate bounds
+    cmp ecx, dword ptr [grid_rows]
+    jge get_cell_error
+    cmp edx, dword ptr [grid_cols]
+    jge get_cell_error
+    
+    ; Calculate cell position
     mov rax, rcx
-    mov r8, [current_grid_col]
-    imul rax, r8
+    imul rax, rax, dword ptr [grid_cols]
     add rax, rdx
-    imul rax, 16
+    imul rax, rax, CELL_DATA_SIZE
+    mov rbx, offset grid_data
+    add rax, rbx
     
-    ; Get type
-    mov ebx, eax
-    mov bl, [spreadsheet_data + rax]
+    jmp get_cell_done
     
-    ; Return data address
-    lea rax, [spreadsheet_data + rax + 1]
+get_cell_error:
+    xor rax, rax
     
-    pop rbp
+get_cell_done:
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+get_cell ENDP
 
-; ============================================================================
-; DISPLAY GRID
-; ============================================================================
-
-display_grid:
-    ; Draw the spreadsheet grid on screen
+clear_cell PROC
+    ; Clear a cell
+    ; Input: ECX = row
+    ;        EDX = column
+    ; Output: EAX = status
     
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
+    push rdi
+    push rcx
+    push rdx
     
-    ; Clear screen
-    call clear_screen
+    ; Get cell pointer
+    call get_cell
+    test rax, rax
+    jz clear_cell_error
     
-    ; Draw column headers
-    call draw_column_headers
+    ; Clear the data
+    mov rdi, rax
+    mov rcx, CELL_DATA_SIZE
+    xor al, al
+    rep stosb
     
-    ; Draw rows
-    mov rcx, 0
+    xor eax, eax
+    jmp clear_cell_done
     
-draw_grid_rows:
-    cmp rcx, GRID_MAX_HEIGHT
-    jge grid_display_done
+clear_cell_error:
+    mov eax, -1
     
-    ; Draw row number
-    call draw_row_number
-    
-    ; Draw cells in row
-    mov rdx, 0
-    
-draw_grid_cells:
-    cmp rdx, GRID_MAX_WIDTH
-    jge grid_next_row
-    
-    ; Draw cell
-    mov r8, rcx
-    add r8, [grid_top_row]
-    mov r9, rdx
-    add r9, [grid_left_col]
-    
-    call draw_cell
-    
-    inc rdx
-    jmp draw_grid_cells
-    
-grid_next_row:
-    inc rcx
-    jmp draw_grid_rows
-    
-grid_display_done:
-    ; Display status bar
-    call display_status_bar
-    
-    add rsp, 32
-    pop rbp
+clear_cell_done:
+    pop rdx
+    pop rcx
+    pop rdi
     ret
+clear_cell ENDP
 
-; ============================================================================
-; DRAW COLUMN HEADERS
-; ============================================================================
+; =============================================================================
+; DISPLAY & RENDERING
+; =============================================================================
 
-draw_column_headers:
-    push rbp
-    mov rbp, rsp
+display_grid PROC
+    ; Render the grid to display buffer
+    ; Input: None
+    ; Output: EAX = 0
     
-    ; Move to top-left
-    mov rcx, 0
-    mov rdx, 0
-    call set_cursor_position
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
     
-    ; Print "   |"
-    mov rcx, offset header_start
-    call print_string
+    ; Initialize display buffer
+    mov rdi, offset display_buffer
+    mov rcx, 1920
+    xor al, al
+    rep stosb
     
-    ; Print column letters A, B, C...
-    mov r8, 0
+    ; Display title
+    mov rsi, offset grid_title
+    mov rdi, offset display_buffer
+    mov rcx, 16
+    rep movsb
     
-print_col_header:
-    cmp r8, GRID_MAX_WIDTH
-    jge headers_done
+    ; Display column headers
+    mov rsi, offset column_headers
+    mov rdi, offset display_buffer
+    add rdi, 80                     ; Next line
+    mov rcx, 80
+    rep movsb
     
-    mov al, 'A'
-    add al, r8b
-    call print_char
+    ; Display grid cells
+    xor ecx, ecx                    ; Row counter
     
-    mov rcx, GRID_CELL_WIDTH - 1
+display_row_loop:
+    cmp ecx, dword ptr [grid_rows]
+    jge display_done
     
-pad_header:
-    cmp rcx, 0
-    je next_header
-    mov al, ' '
-    call print_char
-    dec rcx
-    jmp pad_header
+    xor edx, edx                    ; Column counter
     
-next_header:
-    inc r8
-    jmp print_col_header
-    
-headers_done:
-    pop rbp
-    ret
-
-; ============================================================================
-; DRAW CELL
-; ============================================================================
-
-draw_cell:
-    ; Input: R8 = row, R9 = column (absolute)
-    ;        RCX = display row, RDX = display column
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    ; Set cursor
-    mov rcx, rdx
-    imul rcx, GRID_CELL_WIDTH
-    add rcx, 4                          ; Offset for row numbers
-    mov rdx, rcx
-    mov rcx, 0
-    add rcx, 1
-    call set_cursor_position
+display_col_loop:
+    cmp edx, dword ptr [grid_cols]
+    jge display_next_row
     
     ; Get cell data
-    mov rcx, r8
-    mov rdx, r9
     call get_cell
+    test rax, rax
+    jz display_skip_cell
     
-    ; Check if selected
-    cmp r8, [selected_cell_row]
-    jne cell_normal_display
-    cmp r9, [selected_cell_col]
-    jne cell_normal_display
-    
-    ; Highlight selected cell
-    mov rcx, offset cell_highlight
-    call print_string
-    
-cell_normal_display:
-    ; Display cell content (first 10 chars)
-    mov r10, 0
-    
-display_cell_content:
-    cmp r10, GRID_CELL_WIDTH
-    jge cell_display_done
-    
-    mov al, [rax + r10]
-    cmp al, 0
-    je pad_cell_remaining
-    
-    call print_char
-    inc r10
-    jmp display_cell_content
-    
-pad_cell_remaining:
-    cmp r10, GRID_CELL_WIDTH
-    jge cell_display_done
-    
-    mov al, ' '
-    call print_char
-    inc r10
-    jmp pad_cell_remaining
-    
-cell_display_done:
-    add rsp, 32
-    pop rbp
-    ret
-
-; ============================================================================
-; DRAW ROW NUMBERS
-; ============================================================================
-
-draw_row_number:
-    ; Input: RCX = display row
-    
-    push rbp
-    mov rbp, rsp
-    
-    ; Set cursor to row number column
-    mov rdx, 0
-    call set_cursor_position
-    
-    ; Get absolute row number
-    mov rax, rcx
-    add rax, [grid_top_row]
-    inc rax                             ; 1-based row numbers
-    
-    ; Print row number (right-aligned in 3 chars)
-    cmp eax, 9
-    jg row_num_two_digit
-    
-    mov rcx, offset row_num_pad
-    call print_string
-    
-    mov al, 0x30
-    add al, al
-    call print_char
-    jmp row_num_done
-    
-row_num_two_digit:
-    mov al, (eax / 10) + 0x30
-    call print_char
-    mov al, (eax % 10) + 0x30
-    call print_char
-    
-row_num_done:
-    mov al, ' '
-    call print_char
-    mov al, '|'
-    call print_char
-    
-    pop rbp
-    ret
-
-; ============================================================================
-; HANDLE KEYBOARD INPUT (GRID NAVIGATION)
-; ============================================================================
-
-handle_grid_input:
-    ; Read keyboard and handle navigation/editing
-    ; Output: AL = 0 (continue), 1 (exit), 2 (save)
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    call read_char
-    
-    ; Handle keys
-    cmp al, 27                          ; ESC
-    je grid_input_exit
-    
-    cmp al, 13                          ; ENTER
-    je grid_cell_edit
-    
-    cmp al, 0x09                        ; TAB
-    je grid_next_column
-    
-    cmp al, 0x48                        ; UP arrow (if raw)
-    je grid_move_up
-    
-    cmp al, 0x50                        ; DOWN arrow
-    je grid_move_down
-    
-    xor al, al
-    jmp grid_input_done
-    
-grid_cell_edit:
-    ; Enter edit mode for selected cell
-    call edit_cell
-    jmp grid_input_redraw
-    
-grid_next_column:
-    ; Move to next column
-    inc dword ptr [selected_cell_col]
-    cmp dword ptr [selected_cell_col], GRID_MAX_WIDTH
-    jl grid_input_redraw
-    
-    mov dword ptr [selected_cell_col], 0
-    ; Fall through to next row
-    
-grid_move_down:
-    inc dword ptr [selected_cell_row]
-    cmp dword ptr [selected_cell_row], GRID_MAX_HEIGHT
-    jl grid_input_redraw
-    
-    mov dword ptr [selected_cell_row], 0
-    jmp grid_input_redraw
-    
-grid_move_up:
-    cmp dword ptr [selected_cell_row], 0
-    je grid_input_redraw
-    
-    dec dword ptr [selected_cell_row]
-    
-grid_input_redraw:
-    call display_grid
-    xor al, al
-    jmp grid_input_done
-    
-grid_input_exit:
-    mov al, 1
-    
-grid_input_done:
-    add rsp, 32
-    pop rbp
-    ret
-
-; ============================================================================
-; EDIT CELL
-; ============================================================================
-
-edit_cell:
-    ; Enter edit mode for current selected cell
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-    
-    mov byte ptr [edit_mode], 1
-    
-    ; Get current value
-    mov rcx, [selected_cell_row]
-    mov rdx, [selected_cell_col]
-    call get_cell
-    
-    ; Copy to edit buffer
+    ; Display cell content (simplified)
     mov rsi, rax
-    mov rdi, offset edit_buffer
-    mov rcx, 64
+    mov rdi, offset cell_buffer
+    mov r8, 10
+    rep movsb
     
-copy_edit_buffer:
+display_skip_cell:
+    inc edx
+    jmp display_col_loop
+    
+display_next_row:
+    inc ecx
+    jmp display_row_loop
+    
+display_done:
+    xor eax, eax
+    
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+display_grid ENDP
+
+display_status_bar PROC
+    ; Display status bar at bottom
+    ; Input: None
+    ; Output: EAX = 0
+    
+    push rbx
+    push rsi
+    push rdi
+    
+    ; Position status bar at end of display buffer
+    mov rdi, offset display_buffer
+    add rdi, 1840                   ; 80 * 23
+    
+    mov rsi, offset status_message
+    mov rcx, 80
+    
+status_copy_loop:
     cmp rcx, 0
-    je edit_input_ready
+    je status_done
     
-    mov al, [rsi]
-    mov [rdi], al
+    mov al, byte ptr [rsi]
+    test al, al
+    jz status_done
+    
+    mov byte ptr [rdi], al
     inc rsi
     inc rdi
     dec rcx
-    jmp copy_edit_buffer
+    jmp status_copy_loop
     
-edit_input_ready:
-    ; Get new input
-    mov rcx, offset edit_buffer
-    mov rdx, 64
-    call read_line
+status_done:
+    xor eax, eax
     
-    ; Save new value
-    mov rcx, [selected_cell_row]
-    mov rdx, [selected_cell_col]
-    mov r8, offset edit_buffer
-    mov r9d, 64
-    call set_cell
-    
-    mov byte ptr [edit_mode], 0
-    
-    add rsp, 64
-    pop rbp
+    pop rdi
+    pop rsi
+    pop rbx
     ret
+display_status_bar ENDP
 
-; ============================================================================
-; SORT/FILTER GRID
-; ============================================================================
-
-sort_by_column:
-    ; Input: RCX = column number
+highlight_cell PROC
+    ; Highlight selected cell
+    ; Input: ECX = row
+    ;        EDX = column
+    ; Output: EAX = 0
     
-    push rbp
-    mov rbp, rsp
+    push rbx
+    push rcx
+    push rdx
     
-    ; Simple bubble sort on column
-    mov r8, 0                           ; Outer loop
+    ; Mark cell as selected
+    mov dword ptr [selected_row], ecx
+    mov dword ptr [selected_col], edx
     
-sort_outer:
-    cmp r8, [current_grid_row]
-    jge sort_complete
+    ; Will be drawn differently on next render
+    xor eax, eax
     
-    mov r9, 0                           ; Inner loop
-    
-sort_inner:
-    cmp r9d, dword ptr [current_grid_row]
-    jge sort_outer_next
-    
-    ; Compare cells
-    mov rax, r9
-    imul rax, [current_grid_col]
-    add rax, rcx
-    imul rax, 16
-    
-    mov rbx, r9
-    inc rbx
-    imul rbx, [current_grid_col]
-    add rbx, rcx
-    imul rbx, 16
-    
-    ; Simple comparison (would need proper compare function)
-    mov al, [spreadsheet_data + rax]
-    mov bl, [spreadsheet_data + rbx]
-    cmp al, bl
-    jle sort_inner_next
-    
-    ; Swap rows
-    call swap_rows
-    
-sort_inner_next:
-    inc r9
-    jmp sort_inner
-    
-sort_outer_next:
-    inc r8
-    jmp sort_outer
-    
-sort_complete:
-    pop rbp
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+highlight_cell ENDP
 
-swap_rows:
-    ; Swap row R9 with R9+1
-    push rbp
-    mov rbp, rsp
-    pop rbp
+; =============================================================================
+; NAVIGATION
+; =============================================================================
+
+move_up PROC
+    ; Move cursor up
+    ; Input: None
+    ; Output: EAX = status
+    
+    mov ecx, dword ptr [current_row]
+    cmp ecx, 0
+    jle move_boundary
+    
+    dec ecx
+    mov dword ptr [current_row], ecx
+    
+    xor eax, eax
     ret
+    
+move_boundary:
+    mov eax, -1
+    ret
+move_up ENDP
 
-; ============================================================================
-; SEARCH CELLS
-; ============================================================================
+move_down PROC
+    ; Move cursor down
+    ; Input: None
+    ; Output: EAX = status
+    
+    mov ecx, dword ptr [current_row]
+    inc ecx
+    cmp ecx, dword ptr [grid_rows]
+    jge move_boundary_d
+    
+    mov dword ptr [current_row], ecx
+    xor eax, eax
+    ret
+    
+move_boundary_d:
+    mov eax, -1
+    ret
+move_down ENDP
 
-search_cells:
+move_left PROC
+    ; Move cursor left
+    ; Input: None
+    ; Output: EAX = status
+    
+    mov edx, dword ptr [current_col]
+    cmp edx, 0
+    jle move_boundary_l
+    
+    dec edx
+    mov dword ptr [current_col], edx
+    
+    xor eax, eax
+    ret
+    
+move_boundary_l:
+    mov eax, -1
+    ret
+move_left ENDP
+
+move_right PROC
+    ; Move cursor right
+    ; Input: None
+    ; Output: EAX = status
+    
+    mov edx, dword ptr [current_col]
+    inc edx
+    cmp edx, dword ptr [grid_cols]
+    jge move_boundary_r
+    
+    mov dword ptr [current_col], edx
+    xor eax, eax
+    ret
+    
+move_boundary_r:
+    mov eax, -1
+    ret
+move_right ENDP
+
+; =============================================================================
+; SORTING
+; =============================================================================
+
+sort_by_column PROC
+    ; Sort grid by column
+    ; Input: ECX = column number
+    ;        EDX = ascending (1) or descending (0)
+    ; Output: EAX = status
+    
+    push rbx
+    push rcx
+    push rdx
+    
+    ; Validate column
+    cmp ecx, dword ptr [grid_cols]
+    jge sort_error
+    
+    ; Store sort parameters
+    mov dword ptr [sort_column], ecx
+    mov dword ptr [sort_ascending], edx
+    
+    ; For now, mark as sorted (full implementation would do bubble/quicksort)
+    xor eax, eax
+    jmp sort_done
+    
+sort_error:
+    mov eax, -1
+    
+sort_done:
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+sort_by_column ENDP
+
+; =============================================================================
+; SEARCH
+; =============================================================================
+
+search_cells PROC
+    ; Search for text in cells
     ; Input: RCX = search string
-    ; Output: RAX = found row, RDX = found column (-1 if not found)
+    ; Output: EAX = found (1) or not found (0)
+    ;         RDX = row, R8D = column
     
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
     
-    mov r8, 0                           ; Row counter
+    mov rsi, rcx                    ; Search string
+    xor ecx, ecx                    ; Current row
     
-search_rows:
-    cmp r8, [current_grid_row]
+search_row_loop:
+    cmp ecx, dword ptr [grid_rows]
     jge search_not_found
     
-    mov r9, 0                           ; Column counter
+    xor edx, edx                    ; Current column
     
-search_cols:
-    cmp r9, [current_grid_col]
+search_col_loop:
+    cmp edx, dword ptr [grid_cols]
     jge search_next_row
     
     ; Get cell
-    mov rax, r8
-    mov rdx, r9
     call get_cell
+    test rax, rax
+    jz search_skip
     
     ; Compare with search string
-    mov rsi, rax
-    mov rdi, rcx
+    mov rdi, rax
+    mov rsi, rcx
+    xor rbx, rbx
     
-compare_strings:
-    mov al, [rsi]
-    mov bl, [rdi]
+compare_loop:
+    mov al, byte ptr [rdi + rbx]
+    mov bl, byte ptr [rsi + rbx]
     cmp al, bl
-    jne search_next_col
-    cmp al, 0
-    je search_found
-    inc rsi
-    inc rdi
-    jmp compare_strings
+    jne search_skip
+    test al, al
+    jz search_found
+    inc rbx
+    jmp compare_loop
     
 search_found:
-    mov rax, r8
-    mov rdx, r9
+    mov eax, 1
+    mov edx, ecx                    ; Return row
+    mov r8d, edx                    ; Return col
     jmp search_done
     
-search_next_col:
-    inc r9
-    jmp search_cols
+search_skip:
+    inc edx
+    jmp search_col_loop
     
 search_next_row:
-    inc r8
-    jmp search_rows
+    inc ecx
+    jmp search_row_loop
     
 search_not_found:
-    mov rax, -1
-    mov rdx, -1
+    xor eax, eax
     
 search_done:
-    add rsp, 32
-    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+search_cells ENDP
 
-; ============================================================================
-; DISPLAY STATUS BAR
-; ============================================================================
+; =============================================================================
+; EDITING
+; =============================================================================
 
-display_status_bar:
-    push rbp
-    mov rbp, rsp
+enter_edit_mode PROC
+    ; Enter cell edit mode
+    ; Input: None
+    ; Output: EAX = 0
     
-    ; Move to last line
-    mov rcx, 24
-    mov rdx, 0
-    call set_cursor_position
+    mov dword ptr [edit_mode], 1
     
-    ; Print status
-    mov rcx, offset status_message
-    call print_string
+    ; Get current cell
+    mov ecx, dword ptr [current_row]
+    mov edx, dword ptr [current_col]
+    call get_cell
     
-    pop rbp
+    ; Copy to input buffer
+    mov rsi, rax
+    mov rdi, offset input_buffer
+    mov rcx, 256
+    rep movsb
+    
+    xor eax, eax
     ret
+enter_edit_mode ENDP
 
-; ============================================================================
-; HELPER FUNCTIONS
-; ============================================================================
-
-clear_screen:
-    push rbp
-    mov rbp, rsp
+exit_edit_mode PROC
+    ; Exit cell edit mode and save
+    ; Input: None
+    ; Output: EAX = 0
     
-    ; Print 25 blank lines
-    mov rax, 0
+    ; Save input to current cell
+    mov ecx, dword ptr [current_row]
+    mov edx, dword ptr [current_col]
+    mov r8, offset input_buffer
+    mov r9, 256
+    call set_cell
     
-clear_loop:
-    cmp rax, 25
-    jge clear_done
+    mov dword ptr [edit_mode], 0
     
-    mov rcx, 10
-    mov rdx, '│'
-    call print_char
-    
-    inc rax
-    jmp clear_loop
-    
-clear_done:
-    pop rbp
+    xor eax, eax
     ret
+exit_edit_mode ENDP
 
-set_cursor_position:
-    ; Input: RCX = X, RDX = Y
-    push rbp
-    mov rbp, rsp
-    
-    ; Would use SetConsoleCursorPosition
-    
-    pop rbp
-    ret
-
-print_string:
-    ; Input: RCX = string pointer
-    push rbp
-    mov rbp, rsp
-    
-    mov rsi, rcx
-    
-print_loop:
-    mov al, [rsi]
-    cmp al, 0
-    je print_done
-    
-    call print_char
-    inc rsi
-    jmp print_loop
-    
-print_done:
-    pop rbp
-    ret
-
-print_char:
+append_to_input PROC
+    ; Append character to input buffer
     ; Input: AL = character
-    push rbp
-    mov rbp, rsp
+    ; Output: EAX = input length
     
-    ; Would use WriteConsole
+    push rbx
+    push rdi
     
-    pop rbp
+    mov rdi, offset input_buffer
+    xor ecx, ecx
+    
+find_end:
+    cmp byte ptr [rdi + rcx], 0
+    je input_at_end
+    inc rcx
+    cmp rcx, 256
+    jl find_end
+    jmp input_full
+    
+input_at_end:
+    mov byte ptr [rdi + rcx], al
+    inc rcx
+    mov byte ptr [rdi + rcx], 0
+    mov eax, ecx
+    jmp append_done
+    
+input_full:
+    mov eax, -1
+    
+append_done:
+    pop rdi
+    pop rbx
     ret
+append_to_input ENDP
 
-read_char:
-    ; Output: AL = character
-    push rbp
-    mov rbp, rsp
+; =============================================================================
+; UTILITY
+; =============================================================================
+
+get_current_position PROC
+    ; Get current cursor position
+    ; Output: ECX = row, EDX = column
     
-    ; Would use ReadConsole
-    
-    pop rbp
+    mov ecx, dword ptr [current_row]
+    mov edx, dword ptr [current_col]
     ret
+get_current_position ENDP
 
-read_line:
-    ; Input: RCX = buffer, RDX = max length
-    push rbp
-    mov rbp, rsp
+set_current_position PROC
+    ; Set current cursor position
+    ; Input: ECX = row, EDX = column
+    ; Output: EAX = status
     
-    ; Would use ReadConsole
+    cmp ecx, dword ptr [grid_rows]
+    jge pos_error
+    cmp edx, dword ptr [grid_cols]
+    jge pos_error
     
-    pop rbp
+    mov dword ptr [current_row], ecx
+    mov dword ptr [current_col], edx
+    
+    xor eax, eax
     ret
+    
+pos_error:
+    mov eax, -1
+    ret
+set_current_position ENDP
 
-; ============================================================================
-; DATA STRINGS
-; ============================================================================
+clear_grid PROC
+    ; Clear all grid data
+    ; Input: None
+    ; Output: EAX = 0
+    
+    push rdi
+    
+    mov rdi, offset grid_data
+    mov rcx, GRID_MAX_CELLS * CELL_DATA_SIZE
+    xor al, al
+    rep stosb
+    
+    mov dword ptr [current_row], 0
+    mov dword ptr [current_col], 0
+    
+    xor eax, eax
+    pop rdi
+    ret
+clear_grid ENDP
 
-header_start:           db "   |", 0
-row_num_pad:            db "  ", 0
-cell_highlight:         db "[", 0
-status_message:         db "R: ESC=Exit | ENTER=Edit | TAB=Next | Arrow=Move", 0
+; =============================================================================
+; CELL OPERATIONS
+; =============================================================================
 
-; ============================================================================
-; END OF TABLE SYSTEM
-; ============================================================================
+get_cell PROC
+    ; Get cell value at position
+    ; Input: ECX = row, EDX = col
+    ; Output: RAX = cell data pointer
+    
+    push rbx
+    push rcx
+    push rdx
+    
+    ; Validate position
+    cmp ecx, GRID_ROWS
+    jge cell_get_error
+    cmp edx, GRID_COLS
+    jge cell_get_error
+    
+    ; Calculate offset
+    mov rax, rcx
+    imul rax, GRID_COLS
+    add rax, rdx
+    imul rax, CELL_DATA_SIZE
+    
+    mov rbx, offset grid_data
+    add rax, rbx
+    
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+    
+cell_get_error:
+    xor rax, rax
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+get_cell ENDP
 
-end
+set_cell PROC
+    ; Set cell value at position
+    ; Input: ECX = row, EDX = col, RSI = data, R8 = size
+    ; Output: EAX = status
+    
+    push rbx
+    push rcx
+    push rdi
+    push rsi
+    
+    ; Validate position
+    cmp ecx, GRID_ROWS
+    jge cell_set_error
+    cmp edx, GRID_COLS
+    jge cell_set_error
+    
+    ; Calculate offset
+    mov rax, rcx
+    imul rax, GRID_COLS
+    add rax, rdx
+    imul rax, CELL_DATA_SIZE
+    
+    mov rdi, offset grid_data
+    add rdi, rax
+    
+    ; Copy data to cell
+    mov rcx, r8
+    cmp rcx, CELL_DATA_SIZE
+    jle copy_all
+    mov rcx, CELL_DATA_SIZE
+    
+copy_all:
+    rep movsb
+    
+    xor eax, eax
+    jmp cell_set_done
+    
+cell_set_error:
+    mov eax, -1
+    
+cell_set_done:
+    pop rsi
+    pop rdi
+    pop rcx
+    pop rbx
+    ret
+set_cell ENDP
+
+; =============================================================================
+; SORTING & SEARCHING
+; =============================================================================
+
+sort_rows PROC
+    ; Sort grid rows by column
+    ; Input: ECX = sort column, EDX = sort direction (0=asc, 1=desc)
+    ; Output: EAX = 0
+    
+    push rbx
+    push rcx
+    push rdx
+    
+    ; Validate sort column and persist sort state.
+    cmp ecx, dword ptr [grid_cols]
+    jge sort_rows_done
+    mov dword ptr [sort_column], ecx
+    mov dword ptr [sort_ascending], 1
+    test edx, edx
+    jz sort_dir_set
+    mov dword ptr [sort_ascending], 0
+
+sort_dir_set:
+    ; Perform one adjacent-pass over key column cells.
+    xor ebx, ebx
+
+sort_pass_loop:
+    mov eax, dword ptr [grid_rows]
+    dec eax
+    cmp ebx, eax
+    jge sort_rows_done
+
+    ; cell(row=ebx, col=sort_column)
+    mov eax, ebx
+    imul eax, dword ptr [grid_cols]
+    add eax, dword ptr [sort_column]
+    imul eax, CELL_DATA_SIZE
+    mov r10, offset grid_data
+    add r10, rax
+
+    ; cell(row=ebx+1, col=sort_column)
+    mov eax, ebx
+    inc eax
+    imul eax, dword ptr [grid_cols]
+    add eax, dword ptr [sort_column]
+    imul eax, CELL_DATA_SIZE
+    mov r11, offset grid_data
+    add r11, rax
+
+    movzx r8d, byte ptr [r10]
+    movzx r9d, byte ptr [r11]
+
+    cmp dword ptr [sort_ascending], 0
+    je sort_desc_cmp
+
+    ; Ascending: swap when current > next
+    cmp r8d, r9d
+    jle sort_next_pair
+    jmp sort_swap
+
+sort_desc_cmp:
+    ; Descending: swap when current < next
+    cmp r8d, r9d
+    jge sort_next_pair
+
+sort_swap:
+    ; Swap fixed-size key cell payloads (64 bytes).
+    mov ecx, CELL_DATA_SIZE
+sort_swap_loop:
+    mov al, byte ptr [r10]
+    mov dl, byte ptr [r11]
+    mov byte ptr [r10], dl
+    mov byte ptr [r11], al
+    inc r10
+    inc r11
+    dec ecx
+    jnz sort_swap_loop
+
+sort_next_pair:
+    inc ebx
+    jmp sort_pass_loop
+
+sort_rows_done:
+    xor eax, eax
+    
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+sort_rows ENDP
+
+search_grid PROC
+    ; Search for value in grid
+    ; Input: RCX = search string
+    ;        RDX = search column (-1 for all)
+    ; Output: EAX = row found (-1 if not found)
+    
+    push rbx
+    push rcx
+    push rdi
+    push rsi
+    
+    ; Empty search token -> not found.
+    mov al, byte ptr [rcx]
+    test al, al
+    jz search_not_found
+
+    xor ebx, ebx                    ; Row counter
+    
+search_row_loop:
+    cmp ebx, GRID_ROWS
+    jge search_not_found
+    
+    ; Search this row
+    test edx, edx
+    js search_all_cols              ; If col = -1, search all
+    
+    ; Search specific column
+    mov r8d, edx
+    cmp r8d, GRID_COLS
+    jge search_next_row
+    
+    mov eax, ebx
+    imul eax, dword ptr [grid_cols]
+    add eax, r8d
+    imul eax, CELL_DATA_SIZE
+    mov rsi, offset grid_data
+    add rsi, rax
+
+    mov al, byte ptr [rcx]
+    cmp al, byte ptr [rsi]
+    je search_found
+    jmp search_next_row
+    
+search_all_cols:
+    xor r8d, r8d
+
+search_all_cols_loop:
+    cmp r8d, dword ptr [grid_cols]
+    jge search_next_row
+
+    mov eax, ebx
+    imul eax, dword ptr [grid_cols]
+    add eax, r8d
+    imul eax, CELL_DATA_SIZE
+    mov rsi, offset grid_data
+    add rsi, rax
+
+    mov al, byte ptr [rcx]
+    cmp al, byte ptr [rsi]
+    je search_found
+
+    inc r8d
+    jmp search_all_cols_loop
+
+search_found:
+    mov eax, ebx
+    pop rsi
+    pop rdi
+    pop rcx
+    pop rbx
+    ret
+    
+search_next_row:
+    inc ebx
+    jmp search_row_loop
+    
+search_not_found:
+    mov eax, -1
+    pop rsi
+    pop rdi
+    pop rcx
+    pop rbx
+    ret
+search_grid ENDP
+
+; =============================================================================
+; DISPLAY & FORMATTING
+; =============================================================================
+
+format_cell PROC
+    ; Format cell for display
+    ; Input: RCX = cell data, RDX = format type
+    ; Output: RAX = formatted string
+    
+    push rbx
+    push rcx
+    
+    ; Format type 0 = text, 1 = number, 2 = date
+    mov eax, edx
+    
+    pop rcx
+    pop rbx
+    ret
+format_cell ENDP
+
+display_grid PROC
+    ; Display grid on console
+    ; Output: Grid printed
+    
+    push rbx
+    push rcx
+    push rdx
+    
+    xor ecx, ecx                    ; Row counter
+    
+display_row_loop:
+    cmp ecx, GRID_ROWS
+    jge display_grid_done
+    
+    xor edx, edx                    ; Col counter
+    
+display_col_loop:
+    cmp edx, GRID_COLS
+    jge display_next_row
+    
+    ; Would display cell at [ecx, edx]
+    
+    inc edx
+    jmp display_col_loop
+    
+display_next_row:
+    inc ecx
+    jmp display_row_loop
+    
+display_grid_done:
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+display_grid ENDP
+
+; =============================================================================
+; NAVIGATION
+; =============================================================================
+
+handle_arrow_keys PROC
+    ; Handle arrow key navigation
+    ; Input: AL = arrow key code
+    ; Output: EAX = new position
+    
+    cmp al, KEY_UP
+    je move_up
+    cmp al, KEY_DOWN
+    je move_down
+    cmp al, KEY_LEFT
+    je move_left
+    cmp al, KEY_RIGHT
+    je move_right
+    
+    xor eax, eax
+    ret
+    
+move_up:
+    mov ecx, dword ptr [current_row]
+    test ecx, ecx
+    jz at_top
+    dec ecx
+    mov dword ptr [current_row], ecx
+    jmp nav_done
+    
+at_top:
+    xor eax, eax
+    ret
+    
+move_down:
+    mov ecx, dword ptr [current_row]
+    cmp ecx, GRID_ROWS
+    jge at_bottom
+    inc ecx
+    mov dword ptr [current_row], ecx
+    jmp nav_done
+    
+at_bottom:
+    xor eax, eax
+    ret
+    
+move_left:
+    mov edx, dword ptr [current_col]
+    test edx, edx
+    jz at_left
+    dec edx
+    mov dword ptr [current_col], edx
+    jmp nav_done
+    
+at_left:
+    xor eax, eax
+    ret
+    
+move_right:
+    mov edx, dword ptr [current_col]
+    cmp edx, GRID_COLS
+    jge at_right
+    inc edx
+    mov dword ptr [current_col], edx
+    jmp nav_done
+    
+at_right:
+    xor eax, eax
+    ret
+    
+nav_done:
+    mov eax, dword ptr [current_row]
+    mov edx, dword ptr [current_col]
+    shl eax, 16
+    or eax, edx
+    ret
+handle_arrow_keys ENDP
+
+get_grid_size PROC
+    ; Get grid dimensions
+    ; Output: EAX = rows, EDX = cols
+    
+    mov eax, GRID_ROWS
+    mov edx, GRID_COLS
+    ret
+get_grid_size ENDP
+
+END

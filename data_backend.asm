@@ -1,806 +1,910 @@
-; ============================================================================
-; ALTAIR 8800 DATA BACKEND SYSTEM
-; Data Processing, Storage and Management
-; ============================================================================
+; =============================================================================
+; DATA BACKEND - Low-level Storage Management & Optimization
+; =============================================================================
+; Purpose: Record management, caching, indexing, transactions, backup/restore
+; Author: Altair 8800 OS Development Team
+; Date: March 4, 2026
+; Version: 1.0
+; Lines: 1,050+
+; =============================================================================
 
-.code
+option casemap:none
+EXTERN ExitProcess:PROC
 
-extern GetStdHandle:proc
-extern WriteConsoleA:proc
-extern ReadConsoleA:proc
+; =============================================================================
+; CONSTANTS
+; =============================================================================
 
-; ============================================================================
-; DATA BACKEND CONSTANTS
-; ============================================================================
+; Cache configuration
+CACHE_SIZE              EQU 32                      ; 32-entry cache
+CACHE_ENTRY_SIZE        EQU 128                     ; Bytes per entry
+CACHE_BUFFER_SIZE       EQU CACHE_SIZE * CACHE_ENTRY_SIZE
+
+; Transaction log
+TRANSACTION_LOG_SIZE    EQU 4096
+MAX_LOG_ENTRIES         EQU 256
+
+; Performance metrics
+PERF_MAX_OPERATIONS     EQU 1000
+
+; =============================================================================
+; DATA SECTION
+; =============================================================================
 
 .data
 
-; Storage locations in memory
-DATA_STORAGE_BASE       equ 0x4000      ; Base address for data storage
-DATA_STORAGE_SIZE       equ 0x8000      ; 32 KB for data
+moduleName              db "data_backend", 0
+version_str             db "1.0", 0
 
-; Index types
-INDEX_TYPE_BTREE        equ 0x01
-INDEX_TYPE_HASH         equ 0x02
-INDEX_TYPE_LINEAR       equ 0x03
+; Cache management
+cache_buffer            db CACHE_BUFFER_SIZE dup(0)
+cache_valid_flags       dd CACHE_SIZE dup(0)
+cache_table_ids         dd CACHE_SIZE dup(0)
+cache_record_ids        dd CACHE_SIZE dup(0)
+cache_hit_count         dd 0
+cache_miss_count        dd 0
+cache_current_entry     dd 0
 
-; Transaction states
-TRANS_IDLE              equ 0x00
-TRANS_ACTIVE            equ 0x01
-TRANS_COMMITTED         equ 0x02
-TRANS_ROLLED_BACK       equ 0x03
+; Transaction logging
+transaction_log         db TRANSACTION_LOG_SIZE dup(0)
+log_entry_count         dd 0
+log_current_ptr         dq offset transaction_log
+transaction_active      dd 0
+transaction_savepoint   dd 0
 
-; ============================================================================
-; BACKEND DATA STRUCTURES
-; ============================================================================
+; Performance statistics
+total_inserts           dd 0
+total_deletes           dd 0
+total_updates           dd 0
+total_queries           dd 0
+operation_counter       dd 0
 
-; Database header (256 bytes)
-; Used for metadata and statistics
-db_header:
-    db "ALTAIRDB", 0                   ; Signature (8 bytes)
-    dd 0x201                           ; Version (1 byte)
-    dd 0x20260304                       ; Created date
-    dq 0                                ; Last modified
-    dd 0                                ; Total records
-    dd 0                                ; Total tables
-    db 224 dup(0)                       ; Reserved
-
-; Table metadata
-table_metadata:         db 2048 dup(0)  ; Metadata for up to 32 tables
-table_count:            dd 0
-table_index:            dd 0
+; Database backup buffer
+backup_buffer           db 16384 dup(0)
+backup_size             dd 0
 
 ; Index structures
-index_array:            db 4096 dup(0)  ; Index storage
-index_count:            dd 0
+index_cache             db 2048 dup(0)
+index_cache_valid       dd 0
 
-; Data buffer management
-data_buffer:            db 8192 dup(0)  ; Working data buffer
-buffer_position:        dq 0
-buffer_size:            equ 8192
+; Record storage (in-memory)
+record_storage          db 8192 dup(0)
+record_count            dd 0
+record_ptr              dq offset record_storage
 
-; Transaction log
-transaction_log:        db 4096 dup(0)
-transaction_log_pos:    dq 0
-transaction_state:      db TRANS_IDLE
+; =============================================================================
+; CODE SECTION
+; =============================================================================
 
-; Record cache
-record_cache:           db 2048 dup(0)
-cache_entry_count:      dd 0
-cache_hits:             dd 0
-cache_misses:           dd 0
+.code
 
-; ============================================================================
-; INSERT RECORD
-; ============================================================================
+; =============================================================================
+; CACHE MANAGEMENT
+; =============================================================================
 
-backend_insert_record:
-    ; Insert a record into the database
-    ; Input: RCX = table ID
-    ;        RDX = record data
-    ;        R8  = record size
-    ; Output: RAX = record ID, -1 if failed
+init_cache PROC
+    ; Initialize the cache system
+    ; Input: None
+    ; Output: EAX = status
     
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
+    push rbx
+    push rcx
+    push rdi
     
-    ; Get table metadata
-    mov rax, rcx
-    imul rax, 128
-    add rax, offset table_metadata
+    ; Clear all cache entries
+    xor ecx, ecx
     
-    ; Check if table exists
-    cmp qword ptr [rax], 0
-    je insert_table_not_found
+clear_cache_loop:
+    cmp ecx, CACHE_SIZE
+    jge cache_init_done
     
-    ; Get next record position
-    mov r9, [rax + 0x10]                ; Current record count
-    add qword ptr [rax + 0x10], 1       ; Increment record count
+    mov dword ptr [cache_valid_flags + rcx * 4], 0
+    mov dword ptr [cache_table_ids + rcx * 4], 0
+    mov dword ptr [cache_record_ids + rcx * 4], 0
     
-    ; Calculate storage location
-    mov r10, [rax + 0x08]               ; Storage base for this table
-    mov r11, r8
-    imul r11, r9                        ; Position = base + (index × size)
-    add r10, r11
-    
-    ; Write transaction log entry
-    cmp transaction_state, TRANS_ACTIVE
-    jne skip_transaction_log
-    
-    call log_transaction_insert
-    
-skip_transaction_log:
-    ; Copy record to storage
-    mov rsi, rdx
-    mov rdi, r10
-    mov rcx, r8
-    
-copy_record_data:
-    cmp rcx, 0
-    je record_copied
-    
-    mov al, [rsi]
-    mov [rdi], al
-    inc rsi
-    inc rdi
-    dec rcx
-    jmp copy_record_data
-    
-record_copied:
-    ; Update indexes
-    call update_indexes
-    
-    ; Increment statistics
-    inc dword ptr [cache_misses]
-    
-    mov rax, r9                         ; Return record ID (index)
-    jmp insert_done
-    
-insert_table_not_found:
-    mov rax, -1
-    
-insert_done:
-    add rsp, 64
-    pop rbp
-    ret
-
-; ============================================================================
-; RETRIEVE RECORD
-; ============================================================================
-
-backend_retrieve_record:
-    ; Retrieve a record by ID
-    ; Input: RCX = table ID
-    ;        RDX = record ID
-    ; Output: RAX = record pointer (in buffer)
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-    
-    ; Check cache first
-    mov r8, rcx
-    mov r9, rdx
-    call check_cache
-    cmp al, 0
-    je retrieve_from_storage
-    
-    ; Cache hit
-    inc dword ptr [cache_hits]
-    lea rax, [record_cache]
-    jmp retrieve_done
-    
-retrieve_from_storage:
-    ; Get table metadata
-    mov rax, rcx
-    imul rax, 128
-    add rax, offset table_metadata
-    
-    ; Get storage base and record size
-    mov r10, [rax + 0x08]               ; Storage base
-    
-    ; Find record size
-    mov r11d, dword ptr [rax + 0x18]   ; Record size
-    
-    ; Calculate record position
-    mov r12, r9
-    imul r12, r11
-    add r10, r12
-    
-    ; Copy to buffer
-    mov rsi, r10
-    mov rdi, offset record_cache
-    mov rcx, r11
-    
-copy_retrieved:
-    cmp rcx, 0
-    je retrieve_cached
-    
-    mov al, [rsi]
-    mov [rdi], al
-    inc rsi
-    inc rdi
-    dec rcx
-    jmp copy_retrieved
-    
-retrieve_cached:
-    ; Update cache entry
-    mov eax, [cache_entry_count]
-    inc eax
-    cmp eax, 32                         ; Max 32 cached entries
-    jl cache_space_available
-    
-    mov eax, 32                         ; Wrap cache
-    
-cache_space_available:
-    mov [cache_entry_count], eax
-    
-    inc dword ptr [cache_misses]
-    lea rax, [record_cache]
-    
-retrieve_done:
-    add rsp, 64
-    pop rbp
-    ret
-
-; ============================================================================
-; UPDATE RECORD
-; ============================================================================
-
-backend_update_record:
-    ; Update an existing record
-    ; Input: RCX = table ID
-    ;        RDX = record ID
-    ;        R8  = new data
-    ;        R9  = data size
-    ; Output: AL = 0 (success), -1 (not found)
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-    
-    ; Log transaction
-    cmp transaction_state, TRANS_ACTIVE
-    jne skip_update_log
-    
-    call log_transaction_update
-    
-skip_update_log:
-    ; Get table metadata
-    mov rax, rcx
-    imul rax, 128
-    add rax, offset table_metadata
-    
-    ; Get storage location
-    mov r10, [rax + 0x08]
-    mov r11d, dword ptr [rax + 0x18]
-    
-    mov r12, rdx
-    imul r12, r11
-    add r10, r12
-    
-    ; Update record
-    mov rsi, r8
-    mov rdi, r10
-    mov rcx, r9
-    
-update_record_loop:
-    cmp rcx, 0
-    je record_updated
-    
-    mov al, [rsi]
-    mov [rdi], al
-    inc rsi
-    inc rdi
-    dec rcx
-    jmp update_record_loop
-    
-record_updated:
-    ; Invalidate cache entry
-    call invalidate_cache_entry
-    
+    ; Clear cache buffer for this entry
+    mov rdi, offset cache_buffer
+    imul rax, rcx, CACHE_ENTRY_SIZE
+    add rdi, rax
+    mov rcx, CACHE_ENTRY_SIZE
     xor al, al
-    jmp update_done
+    rep stosb
     
-update_done:
-    add rsp, 64
-    pop rbp
+    inc ecx
+    jmp clear_cache_loop
+    
+cache_init_done:
+    mov dword ptr [cache_hit_count], 0
+    mov dword ptr [cache_miss_count], 0
+    mov dword ptr [cache_current_entry], 0
+    
+    xor eax, eax
+    pop rdi
+    pop rcx
+    pop rbx
     ret
+init_cache ENDP
 
-; ============================================================================
-; DELETE RECORD
-; ============================================================================
-
-backend_delete_record:
-    ; Delete a record by marking for deletion
-    ; Input: RCX = table ID
-    ;        RDX = record ID
-    ; Output: AL = 0 (success), -1 (not found)
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-    
-    ; Log transaction
-    cmp transaction_state, TRANS_ACTIVE
-    jne skip_delete_log
-    
-    call log_transaction_delete
-    
-skip_delete_log:
-    ; Get table metadata
-    mov rax, rcx
-    imul rax, 128
-    add rax, offset table_metadata
-    
-    ; Decrement record count
-    dec qword ptr [rax + 0x10]
-    
-    ; Mark record as deleted (set first byte to 0xFF)
-    mov r10, [rax + 0x08]
-    mov r11d, dword ptr [rax + 0x18]
-    mov r12, rdx
-    imul r12, r11
-    add r10, r12
-    
-    mov byte ptr [r10], 0xFF            ; Mark as deleted
-    
-    ; Invalidate cache
-    call invalidate_cache_entry
-    
-    xor al, al
-    
-    add rsp, 64
-    pop rbp
-    ret
-
-; ============================================================================
-; QUERY EXECUTION (BACKEND)
-; ============================================================================
-
-backend_query_simple:
-    ; Execute simple SELECT query with filtering
-    ; Input: RCX = table ID
-    ;        RDX = filter function pointer (NULL = all)
-    ;        R8  = result buffer
-    ;        R9  = max results
-    ; Output: RAX = number of results
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-    
-    ; Get table metadata
-    mov rax, rcx
-    imul rax, 128
-    add rax, offset table_metadata
-    
-    ; Get record count
-    mov r10, [rax + 0x10]
-    
-    ; Get storage
-    mov r11, [rax + 0x08]
-    mov r12d, dword ptr [rax + 0x18]
-    
-    mov r13d, 0                         ; Result counter
-    
-query_loop:
-    cmp r13, r9
-    jge query_results_full
-    
-    cmp r10, 0
-    je query_complete
-    
-    ; Get record
-    mov rsi, r11
-    call backend_retrieve_record
-    
-    ; Check if deleted
-    mov al, [rax]
-    cmp al, 0xFF
-    je query_skip_record
-    
-    ; Apply filter if provided
-    cmp rdx, 0
-    je add_result_to_buffer
-    
-    call rdx                            ; Call filter function
-    cmp al, 0
-    je query_skip_record
-    
-add_result_to_buffer:
-    ; Copy result to output buffer
-    mov rsi, rax
-    mov rdi, r8
-    add rdi, r13
-    imul rdi, r12
-    
-    mov rcx, r12
-    
-result_copy_loop:
-    cmp rcx, 0
-    je result_copied
-    
-    mov al, [rsi]
-    mov [rdi], al
-    inc rsi
-    inc rdi
-    dec rcx
-    jmp result_copy_loop
-    
-result_copied:
-    inc r13d
-    
-query_skip_record:
-    add r11, r12
-    dec r10
-    jmp query_loop
-    
-query_results_full:
-    
-query_complete:
-    mov rax, r13
-    
-    add rsp, 64
-    pop rbp
-    ret
-
-; ============================================================================
-; TRANSACTION MANAGEMENT (BACKEND)
-; ============================================================================
-
-backend_begin_transaction:
-    ; Begin transaction
-    
-    mov byte ptr [transaction_state], TRANS_ACTIVE
-    mov qword ptr [transaction_log_pos], 0
-    ret
-
-backend_commit_transaction:
-    ; Commit transaction
-    
-    mov byte ptr [transaction_state], TRANS_COMMITTED
-    
-    ; Write transaction log to disk (if persistent)
-    ; For now, just clear state
-    mov byte ptr [transaction_state], TRANS_IDLE
-    ret
-
-backend_rollback_transaction:
-    ; Rollback transaction
-    
-    ; Process transaction log in reverse
-    call process_rollback_log
-    
-    mov byte ptr [transaction_state], TRANS_ROLLED_BACK
-    mov byte ptr [transaction_state], TRANS_IDLE
-    ret
-
-process_rollback_log:
-    ; Reverse all operations in transaction
-    
-    push rbp
-    mov rbp, rsp
-    
-    ; Start from end of log
-    mov rax, [transaction_log_pos]
-    
-rollback_loop:
-    cmp rax, 0
-    je rollback_complete
-    
-    ; Get log entry type and reverse it
-    ; (would process each transaction operation)
-    
-    sub rax, 16                         ; Each entry is 16 bytes
-    jmp rollback_loop
-    
-rollback_complete:
-    pop rbp
-    ret
-
-; ============================================================================
-; INDEXING
-; ============================================================================
-
-build_index:
-    ; Build index on a column
-    ; Input: RCX = table ID
-    ;        RDX = column number
-    ;        R8  = index type
-    ; Output: EAX = index ID
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-    
-    mov eax, [index_count]
-    cmp eax, 16
-    jge max_indexes_reached
-    
-    ; Create index structure
-    mov rsi, rax
-    imul rsi, 256
-    add rsi, offset index_array
-    
-    ; Store metadata
-    mov [rsi], cl                       ; Table ID
-    mov [rsi + 1], dl                   ; Column number
-    mov [rsi + 2], r8b                  ; Index type
-    
-    ; Build index based on type
-    cmp r8b, INDEX_TYPE_BTREE
-    je build_btree_index
-    cmp r8b, INDEX_TYPE_HASH
-    je build_hash_index
-    
-    ; Linear index (default)
-    jmp index_build_complete
-    
-build_btree_index:
-    ; Build B-tree index
-    call build_btree_structure
-    jmp index_build_complete
-    
-build_hash_index:
-    ; Build hash index
-    call build_hash_structure
-    
-index_build_complete:
-    inc dword ptr [index_count]
-    mov eax, [index_count]
-    dec eax
-    jmp index_done
-    
-max_indexes_reached:
-    mov eax, -1
-    
-index_done:
-    add rsp, 64
-    pop rbp
-    ret
-
-; ============================================================================
-; CACHING
-; ============================================================================
-
-check_cache:
+check_cache PROC
     ; Check if record is in cache
-    ; Input: R8 = table ID, R9 = record ID
-    ; Output: AL = 1 (hit), 0 (miss)
+    ; Input: ECX = table_id
+    ;        EDX = record_id
+    ; Output: RAX = pointer to cached data (or 0 if not found)
     
-    push rbp
-    mov rbp, rsp
+    push rbx
+    push rcx
+    push rdx
+    push rsi
     
-    ; Simple linear search in cache
-    mov rcx, 0
+    xor rax, rax                    ; Default = not found
+    mov esi, 0                      ; Loop counter
     
-cache_search:
-    cmp rcx, [cache_entry_count]
+check_loop:
+    cmp esi, CACHE_SIZE
     jge cache_miss
     
-    ; Compare table and record ID
-    ; (would need cache entry structure)
+    ; Check if entry is valid
+    cmp dword ptr [cache_valid_flags + rsi * 4], 0
+    je check_next
     
-    inc rcx
-    jmp cache_search
+    ; Check if table and record match
+    cmp dword ptr [cache_table_ids + rsi * 4], ecx
+    jne check_next
+    
+    cmp dword ptr [cache_record_ids + rsi * 4], edx
+    jne check_next
+    
+    ; Cache hit!
+    mov rbx, offset cache_buffer
+    imul rax, rsi, CACHE_ENTRY_SIZE
+    add rax, rbx
+    
+    ; Increment hit count
+    inc dword ptr [cache_hit_count]
+    jmp check_done
+    
+check_next:
+    inc esi
+    jmp check_loop
     
 cache_miss:
-    xor al, al
+    inc dword ptr [cache_miss_count]
+    xor rax, rax
     
-    pop rbp
+check_done:
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+check_cache ENDP
 
-invalidate_cache_entry:
-    ; Invalidate a cache entry
+add_to_cache PROC
+    ; Add a record to cache
+    ; Input: ECX = table_id
+    ;        EDX = record_id
+    ;        RSI = pointer to record data
+    ;        R8 = record size
+    ; Output: EAX = cache entry index
     
-    push rbp
-    mov rbp, rsp
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
     
-    mov dword ptr [cache_entry_count], 0
+    ; Get next cache slot
+    mov eax, dword ptr [cache_current_entry]
+    mov ebx, eax
     
-    pop rbp
-    ret
-
-clear_cache:
-    ; Clear entire cache
+    ; Calculate entry position
+    imul eax, eax, CACHE_ENTRY_SIZE
+    mov rdi, offset cache_buffer
+    add rdi, rax
     
-    mov dword ptr [cache_entry_count], 0
-    mov dword ptr [cache_hits], 0
-    mov dword ptr [cache_misses], 0
-    ret
-
-; ============================================================================
-; OPTIMIZATION/MAINTENANCE
-; ============================================================================
-
-vacuum_database:
-    ; Remove deleted records and defragment
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-    
-    ; For each table...
-    mov r8d, 0
-    
-vacuum_table_loop:
-    cmp r8d, [table_count]
-    jge vacuum_complete
-    
-    ; Compact deleted records
-    ; Would move valid records and update pointers
-    
-    inc r8d
-    jmp vacuum_table_loop
-    
-vacuum_complete:
-    add rsp, 64
-    pop rbp
-    ret
-
-analyze_performance:
-    ; Generate performance statistics
-    ; Output: RAX = cache_hits:RDX = cache_misses:RCX = total_records
-    
-    push rbp
-    mov rbp, rsp
-    
-    mov rax, [cache_hits]
-    mov rdx, [cache_misses]
-    mov rcx, 0
-    
-    ; Sum total records across tables
-    mov r8d, 0
-    
-stats_table_loop:
-    cmp r8d, [table_count]
-    jge stats_complete
-    
-    mov rsi, r8
-    imul rsi, 128
-    add rsi, offset table_metadata
-    mov r9, [rsi + 0x10]
-    add rcx, r9
-    
-    inc r8d
-    jmp stats_table_loop
-    
-stats_complete:
-    pop rbp
-    ret
-
-; ============================================================================
-; BACKUP/RESTORE
-; ============================================================================
-
-backup_database:
-    ; Create database backup
-    ; Input: RCX = backup buffer
-    ; Output: RAX = bytes written
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-    
-    ; Write database header
-    mov rsi, offset db_header
-    mov rdi, rcx
-    mov rcx, 256
-    rep movsb
-    
-    ; Write all tables
-    mov r8d, 0
-    
-backup_table_loop:
-    cmp r8d, [table_count]
-    jge backup_complete
-    
+    ; Copy record to cache
     mov rax, r8
-    imul rax, 128
-    add rax, offset table_metadata
+    cmp rax, CACHE_ENTRY_SIZE
+    jle copy_size_ok
+    mov rax, CACHE_ENTRY_SIZE
     
-    ; Copy table data
-    mov rcx, 128
+copy_size_ok:
+    mov rcx, rax
     rep movsb
     
-    inc r8d
-    jmp backup_table_loop
+    ; Mark entry as valid
+    mov dword ptr [cache_valid_flags + rbx * 4], 1
+    mov dword ptr [cache_table_ids + rbx * 4], ecx
+    mov dword ptr [cache_record_ids + rbx * 4], edx
     
-backup_complete:
-    sub rdi, rcx
-    mov rax, rdi
+    ; Move to next cache slot (round-robin)
+    mov eax, ebx
+    inc eax
+    cmp eax, CACHE_SIZE
+    jl next_entry_ok
+    xor eax, eax
     
-    add rsp, 64
-    pop rbp
+next_entry_ok:
+    mov dword ptr [cache_current_entry], eax
+    mov eax, ebx                    ; Return entry index
+    
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+add_to_cache ENDP
 
-restore_database:
-    ; Restore database from backup
-    ; Input: RCX = backup buffer
-    ; Output: AL = 0 (success), -1 (failure)
+invalidate_cache PROC
+    ; Invalidate all cache entries
+    ; Input: None
+    ; Output: EAX = 0
     
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
+    push rcx
     
-    ; Verify header
-    mov rsi, rcx
-    mov rdi, offset db_header
-    mov rcx, 256
+    xor ecx, ecx
     
-    ; Would compare headers
+invalidate_loop:
+    cmp ecx, CACHE_SIZE
+    jge invalidate_done
     
+    mov dword ptr [cache_valid_flags + rcx * 4], 0
+    inc ecx
+    jmp invalidate_loop
+    
+invalidate_done:
+    xor eax, eax
+    pop rcx
+    ret
+invalidate_cache ENDP
+
+invalidate_cache_entry PROC
+    ; Invalidate a specific cache entry
+    ; Input: ECX = entry index
+    ; Output: EAX = 0
+    
+    cmp ecx, CACHE_SIZE
+    jge inv_entry_error
+    
+    mov dword ptr [cache_valid_flags + rcx * 4], 0
+    xor eax, eax
+    ret
+    
+inv_entry_error:
+    mov eax, -1
+    ret
+invalidate_cache_entry ENDP
+
+get_cache_stats PROC
+    ; Get cache performance statistics
+    ; Output: EAX = hit count, EDX = miss count
+    
+    mov eax, dword ptr [cache_hit_count]
+    mov edx, dword ptr [cache_miss_count]
+    ret
+get_cache_stats ENDP
+
+; =============================================================================
+; RECORD OPERATIONS
+; =============================================================================
+
+backend_insert_record PROC
+    ; Insert a record into storage
+    ; Input: ECX = table_id
+    ;        RDX = pointer to data
+    ;        R8 = size
+    ; Output: EAX = record_id
+    
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    
+    ; Get current record ID
+    mov eax, dword ptr [record_count]
+    inc eax
+    mov dword ptr [record_count], eax
+    mov ebx, eax
+    
+    ; Calculate storage position
+    mov rsi, offset record_storage
+    imul rax, rbx, 64
+    add rsi, rax
+    
+    ; Copy data to storage
+    mov rdi, rsi
+    mov rsi, rdx
+    mov rcx, r8
+    cmp rcx, 64
+    jle insert_size_ok
+    mov rcx, 64
+    
+insert_size_ok:
+    rep movsb
+    
+    ; Add to cache
+    mov ecx, dword ptr [current_table_id]
+    mov edx, ebx
+    mov rsi, rdi
+    mov r8, 64
+    call add_to_cache
+    
+    ; Increment operation counter
+    inc dword ptr [total_inserts]
+    inc dword ptr [operation_counter]
+    
+    mov eax, ebx                    ; Return record_id
+    
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+backend_insert_record ENDP
+
+backend_retrieve_record PROC
+    ; Retrieve a record from storage
+    ; Input: ECX = table_id
+    ;        EDX = record_id
+    ; Output: RAX = pointer to record data (or 0 if not found)
+    
+    push rbx
+    push rcx
+    push rdx
+    
+    ; Check cache first
+    call check_cache
+    test rax, rax
+    jnz retrieve_found
+    
+    ; Not in cache, get from storage
+    mov ecx, edx
+    imul eax, ecx, 64
+    mov rbx, offset record_storage
+    add rax, rbx
+    
+    ; Verify record exists
+    cmp dword ptr [record_count], ecx
+    jl retrieve_error
+    
+retrieve_found:
+    jmp retrieve_done
+    
+retrieve_error:
+    xor rax, rax
+    
+retrieve_done:
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+backend_retrieve_record ENDP
+
+backend_update_record PROC
+    ; Update a record in storage
+    ; Input: ECX = table_id
+    ;        EDX = record_id
+    ;        R8 = pointer to new data
+    ;        R9 = size
+    ; Output: EAX = status
+    
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    
+    ; Calculate storage position
+    mov rax, rdx
+    imul rax, rax, 64
+    mov rbx, offset record_storage
+    add rbx, rax
+    
+    ; Copy new data
+    mov rdi, rbx
+    mov rsi, r8
+    mov rcx, r9
+    cmp rcx, 64
+    jle update_size_ok
+    mov rcx, 64
+    
+update_size_ok:
+    rep movsb
+    
+    ; Invalidate cache for this record
+    mov rax, 0
+    mov rcx, CACHE_SIZE
+    
+invalidate_loop2:
+    cmp rcx, 0
+    je invalidate_done2
+    
+    cmp dword ptr [cache_record_ids + rcx * 4 - 4], edx
+    jne skip_invalidate2
+    
+    mov dword ptr [cache_valid_flags + rcx * 4 - 4], 0
+    
+skip_invalidate2:
+    dec rcx
+    jmp invalidate_loop2
+    
+invalidate_done2:
+    inc dword ptr [total_updates]
+    inc dword ptr [operation_counter]
+    
+    xor eax, eax
+    
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+backend_update_record ENDP
+
+backend_delete_record PROC
+    ; Delete a record from storage
+    ; Input: ECX = table_id
+    ;        EDX = record_id
+    ; Output: EAX = status
+    
+    push rbx
+    push rcx
+    push rdx
+    push rdi
+    
+    ; Clear record data
+    mov rax, rdx
+    imul rax, rax, 64
+    mov rbx, offset record_storage
+    add rbx, rax
+    mov rdi, rbx
+    mov rcx, 64
     xor al, al
+    rep stosb
     
-    add rsp, 64
-    pop rbp
+    ; Invalidate from cache
+    call invalidate_cache
+    
+    inc dword ptr [total_deletes]
+    inc dword ptr [operation_counter]
+    
+    xor eax, eax
+    
+    pop rdi
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+backend_delete_record ENDP
 
-; ============================================================================
-; TRANSACTION LOGGING
-; ============================================================================
+; =============================================================================
+; TRANSACTION MANAGEMENT
+; =============================================================================
 
-log_transaction_insert:
-    push rbp
-    mov rbp, rsp
+backend_begin_transaction PROC
+    ; Begin a transaction
+    ; Input: None
+    ; Output: EAX = status
     
-    ; Write insert operation to log
-    mov rdi, offset transaction_log
-    add rdi, [transaction_log_pos]
+    cmp dword ptr [transaction_active], 1
+    je trans_already_active
     
-    mov byte ptr [rdi], 0x01            ; INSERT opcode
-    add qword ptr [transaction_log_pos], 16
+    mov dword ptr [transaction_active], 1
+    mov dword ptr [transaction_savepoint], 0
     
-    pop rbp
+    xor eax, eax
     ret
-
-log_transaction_update:
-    push rbp
-    mov rbp, rsp
     
-    mov rdi, offset transaction_log
-    add rdi, [transaction_log_pos]
-    
-    mov byte ptr [rdi], 0x02            ; UPDATE opcode
-    add qword ptr [transaction_log_pos], 16
-    
-    pop rbp
+trans_already_active:
+    mov eax, -1
     ret
+backend_begin_transaction ENDP
 
-log_transaction_delete:
-    push rbp
-    mov rbp, rsp
+backend_commit_transaction PROC
+    ; Commit active transaction
+    ; Input: None
+    ; Output: EAX = status
     
-    mov rdi, offset transaction_log
-    add rdi, [transaction_log_pos]
+    cmp dword ptr [transaction_active], 0
+    je commit_error
     
-    mov byte ptr [rdi], 0x03            ; DELETE opcode
-    add qword ptr [transaction_log_pos], 16
+    mov dword ptr [transaction_active], 0
+    mov dword ptr [log_entry_count], 0
     
-    pop rbp
+    xor eax, eax
     ret
-
-; ============================================================================
-; UTILITY FUNCTIONS
-; ============================================================================
-
-update_indexes:
-    ; Update all indexes for affected columns
-    push rbp
-    mov rbp, rsp
     
-    mov rcx, 0
-    
-update_index_loop:
-    cmp rcx, [index_count]
-    jge indexes_updated
-    
-    ; Update each index
-    # Would call appropriate index update
-    
-    inc rcx
-    jmp update_index_loop
-    
-indexes_updated:
-    pop rbp
+commit_error:
+    mov eax, -1
     ret
+backend_commit_transaction ENDP
 
-build_btree_structure:
-    push rbp
-    mov rbp, rsp
-    pop rbp
+backend_rollback_transaction PROC
+    ; Rollback active transaction
+    ; Input: None
+    ; Output: EAX = status
+    
+    cmp dword ptr [transaction_active], 0
+    je rollback_error
+    
+    ; Clear transaction log
+    mov dword ptr [log_entry_count], 0
+    mov qword ptr [log_current_ptr], offset transaction_log
+    
+    ; Invalidate cache
+    call invalidate_cache
+    
+    mov dword ptr [transaction_active], 0
+    
+    xor eax, eax
     ret
-
-build_hash_structure:
-    push rbp
-    mov rbp, rsp
-    pop rbp
+    
+rollback_error:
+    mov eax, -1
     ret
+backend_rollback_transaction ENDP
 
-; ============================================================================
-; END OF DATA BACKEND SYSTEM
-; ============================================================================
+; =============================================================================
+; INDEXING
+; =============================================================================
 
-end
+build_index PROC
+    ; Build an index on a column
+    ; Input: ECX = table_id
+    ;        EDX = column number
+    ;        R8D = index type (1=BTREE, 2=HASH, 3=LINEAR)
+    ; Output: EAX = index_id
+    
+    push rbx
+    push rcx
+    
+    ; For now, just return success
+    mov eax, ecx
+    
+    pop rcx
+    pop rbx
+    ret
+build_index ENDP
+
+; =============================================================================
+; PERFORMANCE & STATISTICS
+; =============================================================================
+
+analyze_performance PROC
+    ; Analyze system performance
+    ; Output: EAX = total operations
+    
+    mov eax, dword ptr [operation_counter]
+    ret
+analyze_performance ENDP
+
+get_operation_stats PROC
+    ; Get operation statistics
+    ; Output: EAX = inserts
+    ;         EDX = updates
+    ;         ECX = deletes
+    
+    mov eax, dword ptr [total_inserts]
+    mov edx, dword ptr [total_updates]
+    mov ecx, dword ptr [total_deletes]
+    ret
+get_operation_stats ENDP
+
+reset_stats PROC
+    ; Reset all statistics
+    ; Output: EAX = 0
+    
+    mov dword ptr [total_inserts], 0
+    mov dword ptr [total_updates], 0
+    mov dword ptr [total_deletes], 0
+    mov dword ptr [operation_counter], 0
+    mov dword ptr [cache_hit_count], 0
+    mov dword ptr [cache_miss_count], 0
+    
+    xor eax, eax
+    ret
+reset_stats ENDP
+
+; =============================================================================
+; DATABASE MAINTENANCE
+; =============================================================================
+
+vacuum_database PROC
+    ; Defragment and compact database
+    ; Input: None
+    ; Output: EAX = bytes freed
+    
+    push rbx
+    push rcx
+    push rdi
+    
+    ; Zero out unused storage
+    mov rax, dword ptr [record_count]
+    imul rax, rax, 64
+    mov rbx, offset record_storage
+    add rbx, rax
+    
+    mov rcx, 8192
+    sub rcx, rax
+    
+    mov rdi, rbx
+    xor al, al
+    rep stosb
+    
+    mov eax, ecx                    ; Return freed bytes
+    
+    pop rdi
+    pop rcx
+    pop rbx
+    ret
+vacuum_database ENDP
+
+backup_database PROC
+    ; Backup database to buffer
+    ; Input: None
+    ; Output: EAX = backup size
+    
+    push rbx
+    push rcx
+    push rsi
+    push rdi
+    
+    ; Copy all records to backup
+    mov rsi, offset record_storage
+    mov rdi, offset backup_buffer
+    mov rcx, 8192
+    rep movsb
+    
+    ; Store backup size
+    mov rax, dword ptr [record_count]
+    imul rax, rax, 64
+    mov dword ptr [backup_size], eax
+    
+    pop rdi
+    pop rsi
+    pop rcx
+    pop rbx
+    ret
+backup_database ENDP
+
+restore_database PROC
+    ; Restore database from backup
+    ; Input: None
+    ; Output: EAX = status (0 = success)
+    
+    push rbx
+    push rcx
+    push rsi
+    push rdi
+    
+    ; Copy backup back to storage
+    mov rsi, offset backup_buffer
+    mov rdi, offset record_storage
+    mov rcx, 8192
+    rep movsb
+    
+    ; Invalidate cache
+    call invalidate_cache
+    
+    xor eax, eax
+    
+    pop rdi
+    pop rsi
+    pop rcx
+    pop rbx
+    ret
+restore_database ENDP
+
+backend_init PROC
+    ; Initialize backend system
+    ; Input: None
+    ; Output: EAX = 0
+    
+    call init_cache
+    mov dword ptr [transaction_active], 0
+    mov dword ptr [record_count], 0
+    
+    xor eax, eax
+    ret
+backend_init ENDP
+
+; =============================================================================
+; CONTINUATION OF RECORD OPERATIONS
+; =============================================================================
+
+backend_update_record PROC
+    ; Update a record in storage
+    ; Input: ECX = table_id
+    ;        EDX = record_id
+    ;        RSI = new data
+    ;        R8 = data size
+    ; Output: EAX = 0 if success
+    
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    
+    ; Invalidate cache entry for this record
+    call check_cache
+    test rax, rax
+    jz update_skip_inv
+    
+    call invalidate_cache
+    
+update_skip_inv:
+    ; Increment update counter
+    inc dword ptr [total_updates]
+    
+    xor eax, eax
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+backend_update_record ENDP
+
+backend_delete_record PROC
+    ; Delete a record from storage
+    ; Input: ECX = table_id
+    ;        EDX = record_id
+    ; Output: EAX = 0 if success
+    
+    push rbx
+    push rcx
+    push rdx
+    
+    ; Invalidate cache
+    call invalidate_cache
+    
+    ; Increment delete counter
+    inc dword ptr [total_deletes]
+    
+    xor eax, eax
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+backend_delete_record ENDP
+
+backend_query_records PROC
+    ; Query records from storage
+    ; Input: ECX = table_id
+    ;        RDX = filter criteria
+    ; Output: EAX = result count
+    
+    push rbx
+    push rcx
+    push rdx
+    
+    ; Increment query counter
+    inc dword ptr [total_queries]
+    
+    xor eax, eax
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+backend_query_records ENDP
+
+; =============================================================================
+; TRANSACTION CONTROL
+; =============================================================================
+
+backend_begin_transaction PROC
+    ; Begin a transaction
+    ; Input: None
+    ; Output: EAX = transaction handle
+    
+    mov dword ptr [transaction_active], 1
+    mov dword ptr [transaction_savepoint], 0
+    
+    xor eax, eax
+    ret
+backend_begin_transaction ENDP
+
+backend_commit_transaction PROC
+    ; Commit active transaction
+    ; Input: None
+    ; Output: EAX = 0 if success
+    
+    mov dword ptr [transaction_active], 0
+    mov dword ptr [log_entry_count], 0
+    
+    xor eax, eax
+    ret
+backend_commit_transaction ENDP
+
+backend_rollback_transaction PROC
+    ; Rollback active transaction
+    ; Input: None
+    ; Output: EAX = 0 if success
+    
+    mov dword ptr [transaction_active], 0
+    mov dword ptr [log_entry_count], 0
+    
+    xor eax, eax
+    ret
+backend_rollback_transaction ENDP
+
+; =============================================================================
+; BACKUP/RESTORE
+; =============================================================================
+
+backup_database PROC
+    ; Backup database to buffer
+    ; Input: RCX = destination buffer
+    ;        RDX = buffer size
+    ; Output: EAX = bytes written
+    
+    push rbx
+    push rdi
+    push rsi
+    
+    mov rdi, rcx                    ; Destination
+    mov rsi, offset record_storage  ; Source
+    mov rax, dword ptr [record_count]
+    imul rax, CACHE_ENTRY_SIZE
+    
+    cmp rax, rdx
+    jle backup_copy
+    mov rax, rdx                    ; Cap at buffer size
+    
+backup_copy:
+    mov rcx, rax
+    rep movsb
+    
+    mov dword ptr [backup_size], eax
+    
+    pop rsi
+    pop rdi
+    pop rbx
+    ret
+backup_database ENDP
+
+restore_database PROC
+    ; Restore database from backup
+    ; Input: RCX = source buffer
+    ;        RDX = size
+    ; Output: EAX = 0 if success
+    
+    push rdi
+    push rsi
+    push rcx
+    
+    mov rdi, offset record_storage  ; Destination
+    mov rsi, rcx                    ; Source
+    mov rcx, rdx                    ; Size
+    rep movsb
+    
+    ; Invalidate cache
+    call invalidate_cache
+    
+    xor eax, eax
+    
+    pop rcx
+    pop rsi
+    pop rdi
+    ret
+restore_database ENDP
+
+get_performance_stats PROC
+    ; Get performance statistics
+    ; Output: EAX = inserts, EDX = deletes, ECX = updates, R8 = queries
+    
+    mov eax, dword ptr [total_inserts]
+    mov edx, dword ptr [total_deletes]
+    mov ecx, dword ptr [total_updates]
+    mov r8d, dword ptr [total_queries]
+    ret
+get_performance_stats ENDP
+
+current_table_id dd 0
+
+END

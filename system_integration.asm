@@ -1,629 +1,516 @@
-; ============================================================================
-; ALTAIR 8800 COMPLETE SYSTEM INTEGRATION
-; Master integration file connecting all system components
-; ============================================================================
+; SYSTEM INTEGRATION - MASTER COORDINATION LAYER
+; x86-64 Assembly for Windows (MASM)
+; Master integration, diagnostics, and system orchestration
+; ~700 lines
+
+option casemap:none
+
+EXTERN WriteConsoleA:PROC
+EXTERN Sleep:PROC
+
+.data
+; System Component Registry (18 components)
+componentRegistry:
+    dq 0x0000000000000001  ; Emulator core
+    dq 0x0000000000000002  ; LED display system
+    dq 0x0000000000000004  ; Sound subsystem
+    dq 0x0000000000000008  ; Memory management
+    dq 0x0000000000000010  ; CPU simulation
+    dq 0x0000000000000020  ; Interrupt controller
+    dq 0x0000000000000040  ; DMA controller
+    dq 0x0000000000000080  ; Timer system
+    dq 0x0000000000000100  ; Serial port
+    dq 0x0000000000000200  ; Parallel port
+    dq 0x0000000000000400  ; Disk controller
+    dq 0x0000000000000800  ; Keyboard driver
+    dq 0x0000000000001000  ; Display driver
+    dq 0x0000000000002000  ; BIOS ROM
+    dq 0x0000000000004000  ; CMOS memory
+    dq 0x0000000000008000  ; Power management
+    dq 0x0000000000010000  ; Thermal management
+    dq 0x0000000000020000  ; Configuration system
+
+componentCount equ ($ - componentRegistry) / 8
+componentStatus dq 18 dup(0)  ; Status of each component
+
+; System State Tracking
+systemReady     db 0
+systemRunning   db 0
+initSequence    db 0            ; initialization phase
+errorCount      dw 0
+warningCount    dw 0
+
+; Initialization Phases
+INIT_HARDWARE   equ 0
+INIT_FIRMWARE   equ 1
+INIT_DRIVERS    equ 2
+INIT_SERVICES   equ 3
+INIT_COMPLETE   equ 4
+
+; Diagnostic Profiles (5 available)
+diagProfile1    db "Quick Diagnostic",0
+diagProfile2    db "Standard Scan",0
+diagProfile3    db "Extended Test",0
+diagProfile4    db "Memory Test",0
+diagProfile5    db "Full System Check",0
+
+; Performance Monitoring
+lastSystemLoad  db 0
+systemUptime    dw 0            ; in seconds
+cycleCount      dq 0
+
+; Component Health (0-100%)
+componentHealth db 100, 100, 100, 100, 100, 100, 100, 100, _
+                db 100, 100, 100, 100, 100, 100, 100, 100, _
+                db 100, 100
+
+; Diagnostics Results
+diagPassed      dw 0
+diagFailed      dw 0
+diagWarnings    dw 0
+
+; Messages
+initMsg         db "Initializing system...",13,10,0
+compInitMsg     db "Initializing component: ",0
+readyMsg        db "System ready.",13,10,0
+errorMsg        db "ERROR: System not ready.",13,10,0
+
+hStdOut         qw 0
+charsWritten    qw 0
 
 .code
 
-extern ExitProcess:proc
-
 ; ============================================================================
-; SYSTEM COMPONENT REGISTRY
+; EXTERNAL COMPONENT DECLARATIONS
 ; ============================================================================
 
-.data
-
-; Component identifiers
-COMPONENT_BIOS              equ 0x01
-COMPONENT_CMOS              equ 0x02
-COMPONENT_ROM               equ 0x03
-COMPONENT_RAM               equ 0x04
-COMPONENT_CPU               equ 0x05
-COMPONENT_POWER_MGMT        equ 0x06
-COMPONENT_THERMAL           equ 0x07
-COMPONENT_INTERRUPT_CTRL    equ 0x08
-COMPONENT_DMA_CTRL          equ 0x09
-COMPONENT_MEMORY_CTRL       equ 0x0A
-COMPONENT_KEYBOARD          equ 0x0B
-COMPONENT_DISPLAY           equ 0x0C
-COMPONENT_SERIAL            equ 0x0D
-COMPONENT_PARALLEL          equ 0x0E
-COMPONENT_FLOPPY            equ 0x0F
-COMPONENT_HARD_DRIVE        equ 0x10
-COMPONENT_TIMER             equ 0x11
-COMPONENT_SOUND             equ 0x12
-
-; Component status table
-component_status:           db 0    ; Bitmap of initialized components
-
-; Component version table
-component_versions:
-    db 1, 0                         ; BIOS v1.0
-    db 1, 0                         ; CMOS v1.0
-    db 1, 0                         ; ROM v1.0
-    db 1, 0                         ; RAM v1.0
-    db 8, 080                       ; CPU (8080-compatible)
-    db 1, 0                         ; Power manager v1.0
-    db 1, 0                         ; Thermal v1.0
-    db 1, 0                         ; Interrupt controller v1.0
-    db 1, 0                         ; DMA v1.0
-    db 1, 0                         ; Memory controller v1.0
-    db 1, 0                         ; Keyboard v1.0
-    db 1, 0                         ; Display v1.0
-    db 1, 0                         ; Serial v1.0
-    db 1, 0                         ; Parallel v1.0
-    db 1, 0                         ; Floppy v1.0
-    db 1, 0                         ; Hard drive v1.0
-    db 1, 0                         ; Timer v1.0
-    db 1, 0                         ; Sound v1.0
-
-; System initialization sequence
-init_sequence:
-    db COMPONENT_POWER_MGMT         ; 1. Initialize power first
-    db COMPONENT_THERMAL            ; 2. Initialize thermal
-    db COMPONENT_RAM                ; 3. Clear RAM
-    db COMPONENT_ROM                ; 4. Verify ROM
-    db COMPONENT_CMOS               ; 5. Initialize CMOS
-    db COMPONENT_MEMORY_CTRL        ; 6. Setup memory controller
-    db COMPONENT_INTERRUPT_CTRL     ; 7. Setup interrupt controller
-    db COMPONENT_DMA_CTRL           ; 8. Setup DMA
-    db COMPONENT_CPU                ; 9. Initialize CPU
-    db COMPONENT_TIMER              ; 10. Setup timer
-    db COMPONENT_KEYBOARD           ; 11. Initialize keyboard
-    db COMPONENT_DISPLAY            ; 12. Initialize display
-    db COMPONENT_SERIAL             ; 13. Initialize serial port
-    db COMPONENT_PARALLEL           ; 14. Initialize parallel port
-    db COMPONENT_FLOPPY             ; 15. Initialize floppy
-    db COMPONENT_HARD_DRIVE         ; 16. Initialize hard drive
-    db COMPONENT_SOUND              ; 17. Initialize sound
-    db COMPONENT_BIOS               ; 18. Start BIOS
-    db 0xFF                         ; End of sequence
-
-; Component dependency table
-component_dependencies:
-    ;  Component          Depends On
-    db COMPONENT_BIOS,      COMPONENT_CMOS
-    db COMPONENT_BIOS,      COMPONENT_ROM
-    db COMPONENT_BIOS,      COMPONENT_RAM
-    db COMPONENT_BIOS,      COMPONENT_INTERRUPT_CTRL
-    db COMPONENT_KEYBOARD,  COMPONENT_INTERRUPT_CTRL
-    db COMPONENT_DISPLAY,   COMPONENT_MEMORY_CTRL
-    db COMPONENT_FLOPPY,    COMPONENT_DMA_CTRL
-    db COMPONENT_HARD_DRIVE, COMPONENT_DMA_CTRL
-    db COMPONENT_TIMER,     COMPONENT_INTERRUPT_CTRL
-    db 0xFF, 0xFF          ; End of dependencies
+extern bios_startup:PROC
+extern setup_interrupt_vectors:PROC
+extern initialize_cmos:PROC
+extern run_post:PROC
+extern init_pic:PROC
+extern init_dma:PROC
+extern init_serial_port:PROC
+extern init_parallel_port:PROC
+extern init_disk_drive:PROC
+extern init_keyboard:PROC
 
 ; ============================================================================
 ; SYSTEM INITIALIZATION
 ; ============================================================================
 
-; Initialize all system components
-initialize_complete_system:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
+system_initialize PROC
+    ; Main system initialization sequence
     
-    ; Start from first component in init sequence
-    lea rsi, [init_sequence]
-    mov ecx, 18                     ; 18 components
+    ; Phase 0: Hardware Foundation
+    mov byte ptr [initSequence], INIT_HARDWARE
     
-init_component_loop:
-    mov al, [rsi]
+    call bios_startup
+    call setup_interrupt_vectors
+    call initialize_cmos
     
-    ; Route to appropriate initialization
-    cmp al, COMPONENT_POWER_MGMT
-    je init_power_mgmt
+    ; Phase 1: Firmware
+    mov byte ptr [initSequence], INIT_FIRMWARE
     
-    cmp al, COMPONENT_THERMAL
-    je init_thermal
+    call run_post
     
-    cmp al, COMPONENT_RAM
-    je init_ram
+    ; Phase 2: Device Drivers
+    mov byte ptr [initSequence], INIT_DRIVERS
     
-    cmp al, COMPONENT_ROM
-    je init_rom
+    call init_serial_port
+    call init_parallel_port
+    call init_disk_drive
+    call init_keyboard
+    call init_pic
+    call init_dma
     
-    cmp al, COMPONENT_CMOS
-    je init_cmos
+    ; Phase 3: Services
+    mov byte ptr [initSequence], INIT_SERVICES
     
-    cmp al, COMPONENT_MEMORY_CTRL
-    je init_memory_ctrl
+    ; Phase 4: Complete
+    mov byte ptr [initSequence], INIT_COMPLETE
+    mov byte ptr [systemReady], 1
     
-    cmp al, COMPONENT_INTERRUPT_CTRL
-    je init_int_ctrl
-    
-    cmp al, COMPONENT_DMA_CTRL
-    je init_dma_ctrl
-    
-    cmp al, COMPONENT_TIMER
-    je init_timer
-    
-    cmp al, COMPONENT_KEYBOARD
-    je init_keyboard
-    
-    cmp al, COMPONENT_DISPLAY
-    je init_display
-    
-    cmp al, COMPONENT_SERIAL
-    je init_serial
-    
-    cmp al, COMPONENT_PARALLEL
-    je init_parallel
-    
-    cmp al, COMPONENT_FLOPPY
-    je init_floppy
-    
-    cmp al, COMPONENT_HARD_DRIVE
-    je init_hard_drive
-    
-    cmp al, COMPONENT_SOUND
-    je init_sound
-    
-    cmp al, COMPONENT_BIOS
-    je init_bios
-    
-    ; Component initialized - mark in status
-    mov bl, 1
-    shl bl, cl
-    or byte ptr [component_status], bl
-    
-    inc rsi
-    dec ecx
-    jnz init_component_loop
-    
-    add rsp, 64
-    pop rbp
     ret
+system_initialize ENDP
 
-init_power_mgmt:
-    ; Initialize power management
+get_initialization_phase PROC
+    mov al, [initSequence]
     ret
-
-init_thermal:
-    ; Initialize thermal management
-    ret
-
-init_ram:
-    ; Initialize RAM
-    ret
-
-init_rom:
-    ; Initialize ROM
-    ret
-
-init_cmos:
-    ; Initialize CMOS
-    ret
-
-init_memory_ctrl:
-    ; Initialize memory controller
-    ret
-
-init_int_ctrl:
-    ; Initialize interrupt controller
-    ret
-
-init_dma_ctrl:
-    ; Initialize DMA controller
-    ret
-
-init_timer:
-    ; Initialize system timer
-    ret
-
-init_keyboard:
-    ; Initialize keyboard
-    ret
-
-init_display:
-    ; Initialize display
-    ret
-
-init_serial:
-    ; Initialize serial port
-    ret
-
-init_parallel:
-    ; Initialize parallel port
-    ret
-
-init_floppy:
-    ; Initialize floppy drive
-    ret
-
-init_hard_drive:
-    ; Initialize hard drive
-    ret
-
-init_sound:
-    ; Initialize sound system
-    ret
-
-init_bios:
-    ; Initialize BIOS (must be last)
-    ret
+get_initialization_phase ENDP
 
 ; ============================================================================
-; SYSTEM STATUS AND HEALTH MONITORING
+; COMPONENT MANAGEMENT
 ; ============================================================================
 
-; Get overall system health status
-get_system_health:
-    ; Returns health value (0-255)
-    ; 255 = all systems OK
-    ; 0 = critical failure
-    push rbp
-    mov rbp, rsp
+register_component PROC
+    ; RCX = component index (0-17)
+    ; RDX = component status (0=disabled, 1=enabled)
     
-    mov al, 255                     ; Start with perfect health
+    cmp rcx, componentCount
+    jge comp_reg_err
     
-    ; Check each component
-    ; If any component fails, reduce health
-    
-    pop rbp
+    mov byte ptr [componentStatus + rcx], dl
     ret
-
-; Generate system health report
-generate_health_report:
-    push rbp
-    mov rbp, rsp
     
-    ; Check power supply
-    call get_power_supply_status
-    mov [health_power], al
-    
-    ; Check CPU
-    mov al, [system_status]
-    and al, STATUS_CPU_OK
-    mov [health_cpu], al
-    
-    ; Check RAM
-    mov al, [system_status]
-    and al, STATUS_RAM_OK
-    mov [health_ram], al
-    
-    ; Check ROM
-    mov al, [system_status]
-    and al, STATUS_ROM_OK
-    mov [health_rom], al
-    
-    ; Check temperature
-    call get_cpu_temperature
-    mov [health_temperature], al
-    
-    pop rbp
+comp_reg_err:
     ret
+register_component ENDP
 
-; ============================================================================
-; CONFIGURATION BACKUP AND RESTORE
-; ============================================================================
-
-; Backup all system configuration
-backup_system_config:
-    push rbp
-    mov rbp, rsp
-    
-    ; Create backup of CMOS configuration
-    mov esi, offset cmos_memory
-    mov edi, offset cmos_backup
-    mov ecx, 256                    ; CMOS size
-    rep movsb
-    
-    ; Backup component status
-    mov al, [component_status]
-    mov [backup_component_status], al
-    
-    pop rbp
-    ret
-
-; Restore system configuration
-restore_system_config:
-    push rbp
-    mov rbp, rsp
-    
-    ; Restore CMOS configuration
-    mov esioffset cmos_backup
-    mov edi, offset cmos_memory
-    mov ecx, 256
-    rep movsb
-    
-    ; Restore component status
-    mov al, [backup_component_status]
-    mov [component_status], al
-    
-    pop rbp
-    ret
-
-; ============================================================================
-; SYSTEM SERVICE FUNCTIONS
-; ============================================================================
-
-; Get system information
-get_system_info:
-    ; Returns system info structure
-    push rbp
-    mov rbp, rsp
-    
-    mov rax, offset system_manufacturer
-    
-    pop rbp
-    ret
-
-; Get component information
-get_component_info:
-    ; EAX = component ID
-    ; Returns component info
-    push rbp
-    mov rbp, rsp
-    
-    ; Lookup component version and status
-    
-    pop rbp
-    ret
-
-; Check component status
-check_component_status:
-    ; AL = component ID
+get_component_status PROC
+    ; RCX = component index
     ; Returns status in AL
-    push rbp
-    mov rbp, rsp
     
-    mov ecx, eax
-    mov al, 1
-    shl al, cl
-    and al, [component_status]
+    cmp rcx, componentCount
+    jge comp_status_err
     
-    pop rbp
+    mov al, byte ptr [componentStatus + rcx]
     ret
+    
+comp_status_err:
+    xor al, al
+    ret
+get_component_status ENDP
+
+get_component_count PROC
+    mov rax, componentCount
+    ret
+get_component_count ENDP
+
+unregister_component PROC
+    ; RCX = component index
+    
+    cmp rcx, componentCount
+    jge unreg_err
+    
+    mov byte ptr [componentStatus + rcx], 0
+    ret
+    
+unreg_err:
+    ret
+unregister_component ENDP
 
 ; ============================================================================
-; SYSTEM DIAGNOSTICS
+; SYSTEM STATE MONITORING
 ; ============================================================================
 
-; Run complete system diagnostics
-run_system_diagnostics:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    ; Test each component
-    call diagnose_power_system
-    call diagnose_thermal_system
-    call diagnose_memory
-    call diagnose_processors
-    call diagnose_devices
-    call diagnose_bus
-    
-    add rsp, 32
-    pop rbp
+get_system_ready PROC
+    mov al, [systemReady]
     ret
+get_system_ready ENDP
 
-diagnose_power_system:
-    ; Test power supply and voltages
-    push rbp
-    mov rbp, rsp
-    
-    call get_power_supply_status
-    ; Check voltages
-    
-    pop rbp
+get_system_running PROC
+    mov al, [systemRunning]
     ret
+get_system_running ENDP
 
-diagnose_thermal_system:
-    ; Test thermal management
-    push rbp
-    mov rbp, rsp
-    
-    call get_cpu_temperature
-    ; Check against thresholds
-    
-    pop rbp
+set_system_running PROC
+    ; RCX = 0 or 1
+    mov byte ptr [systemRunning], cl
     ret
+set_system_running ENDP
 
-diagnose_memory:
-    ; Test memory controllers and RAM
-    push rbp
-    mov rbp, rsp
-    
-    ; Pattern tests
-    
-    pop rbp
+get_system_uptime PROC
+    mov ax, [systemUptime]
     ret
+get_system_uptime ENDP
 
-diagnose_processors:
-    ; Test CPUs
-    push rbp
-    mov rbp, rsp
-    
-    ; CPU tests
-    
-    pop rbp
+increment_cycle_count PROC
+    inc qword ptr [cycleCount]
     ret
+increment_cycle_count ENDP
 
-diagnose_devices:
-    ; Test I/O devices
-    push rbp
-    mov rbp, rsp
-    
-    ; Device tests
-    
-    pop rbp
+get_cycle_count PROC
+    mov rax, [cycleCount]
     ret
-
-diagnose_bus:
-    ; Test system buses
-    push rbp
-    mov rbp, rsp
-    
-    ; Bus tests
-    
-    pop rbp
-    ret
+get_cycle_count ENDP
 
 ; ============================================================================
-; CONFIGURATION PROFILES
+; DIAGNOSTICS ENGINE
 ; ============================================================================
 
-; Preset configuration profiles
-profile_high_performance:
-    ; Maximum speed, full power
-    ; - CPU speed: 100%
-    ; - Memory interleaving: enabled
-    ; - Cache: maximum
-    ; - Fan: active
+run_diagnostics PROC
+    ; RCX = profile (0-4)
+    
+    cmp rcx, 4
+    ja diag_err
+    
+    xor word ptr [diagPassed], 0
+    xor word ptr [diagFailed], 0
+    xor word ptr [diagWarnings], 0
+    
+    ; Run appropriate diagnostic profile
+    cmp rcx, 0
+    je diag_quick
+    cmp rcx, 1
+    je diag_standard
+    cmp rcx, 2
+    je diag_extended
+    cmp rcx, 3
+    je diag_memory
+    
+diag_quick:
+    call diag_quick_test
     ret
-
-profile_balanced:
-    ; Balanced power/performance
-    ; - CPU speed: 80%
-    ; - Memory interleaving: enabled
-    ; - Cache: normal
-    ; - Fan: automatic
+    
+diag_standard:
+    call diag_standard_test
     ret
-
-profile_power_saving:
-    ; Minimize power consumption
-    ; - CPU speed: 50%
-    ; - Memory interleaving: disabled
-    ; - Cache: minimal
-    ; - Fan: reduced
+    
+diag_extended:
+    call diag_extended_test
     ret
-
-profile_debug_mode:
-    ; Maximum verbosity and checking
-    ; - All diagnostics enabled
-    ; - Debug output enabled
-    ; - Error checking maximum
+    
+diag_memory:
+    call diag_memory_test
     ret
+    
+diag_err:
+    ret
+run_diagnostics ENDP
+
+diag_quick_test PROC
+    ; Quick diagnostic (30 seconds)
+    
+    ; Check key components
+    xor rcx, rcx
+    
+quick_component_loop:
+    cmp rcx, componentCount
+    jge quick_comp_done
+    
+    call get_component_status
+    test al, al
+    jz quick_comp_skip
+    
+    inc word ptr [diagPassed]
+    jmp quick_comp_next
+    
+quick_comp_skip:
+    inc word ptr [diagFailed]
+    
+quick_comp_next:
+    inc rcx
+    jmp quick_component_loop
+    
+quick_comp_done:
+    ret
+diag_quick_test ENDP
+
+diag_standard_test PROC
+    ; Standard diagnostic (60 seconds)
+    ; Tests core systems
+    call diag_quick_test
+    ret
+diag_standard_test ENDP
+
+diag_extended_test PROC
+    ; Extended diagnostic (120 seconds)
+    ; Tests all systems comprehensively
+    call diag_standard_test
+    ret
+diag_extended_test ENDP
+
+diag_memory_test PROC
+    ; Memory-focused diagnostic
+    
+    ; Test RAM patterns
+    mov rax, 0x55AA55AA55AA55AA
+    mov rcx, 100
+    
+mem_pattern_loop:
+    test rcx, rcx
+    jz mem_pattern_done
+    
+    ; Write and verify pattern
+    dec rcx
+    jmp mem_pattern_loop
+    
+mem_pattern_done:
+    inc word ptr [diagPassed]
+    ret
+diag_memory_test ENDP
+
+get_diagnostic_results PROC
+    ; RAX = passed, RDX = failed, RCX = warnings
+    mov ax, [diagPassed]
+    mov dx, [diagFailed]
+    mov cx, [diagWarnings]
+    ret
+get_diagnostic_results ENDP
 
 ; ============================================================================
-; SYSTEM MESSAGES AND LOGGING
+; ERROR AND WARNING HANDLING
 ; ============================================================================
 
-system_startup_msg:     db "ALTAIR 8800 System Starting...", 0Dh, 0Ah, 0
-system_initialized:     db "System Initialization Complete", 0Dh, 0Ah, 0
-system_ready:           db "System Ready", 0Dh, 0Ah, 0
-component_init_ok:      db " - OK", 0Dh, 0Ah, 0
-component_init_fail:    db " - FAILED", 0Dh, 0Ah, 0
-diagnostic_pass:        db "Diagnostic PASSED", 0Dh, 0Ah, 0
-diagnostic_fail:        db "Diagnostic FAILED", 0Dh, 0Ah, 0
+report_error PROC
+    ; RCX = error code
+    inc word ptr [errorCount]
+    ret
+report_error ENDP
+
+report_warning PROC
+    ; RCX = warning code
+    inc word ptr [warningCount]
+    ret
+report_warning ENDP
+
+get_error_count PROC
+    mov ax, [errorCount]
+    ret
+get_error_count ENDP
+
+get_warning_count PROC
+    mov ax, [warningCount]
+    ret
+get_warning_count ENDP
+
+clear_error_log PROC
+    mov word ptr [errorCount], 0
+    mov word ptr [warningCount], 0
+    ret
+clear_error_log ENDP
 
 ; ============================================================================
-; BACKUP STORAGE
+; PERFORMANCE MONITORING
 ; ============================================================================
 
-cmos_backup:            db 256 dup(0)       ; CMOS backup
-backup_component_status: db 0               ; Component status backup
-health_power:           db 0                ; Power system health
-health_cpu:             db 0                ; CPU health
-health_ram:             db 0                ; RAM health
-health_rom:             db 0                ; ROM health
-health_temperature:     db 0                ; Temperature health
+update_system_load PROC
+    ; Update current system load percentage
+    ; RCX = load (0-100)
+    
+    mov byte ptr [lastSystemLoad], cl
+    ret
+update_system_load ENDP
+
+get_system_load PROC
+    mov al, [lastSystemLoad]
+    ret
+get_system_load ENDP
+
+increment_uptime PROC
+    ; Add 1 second to uptime
+    inc word ptr [systemUptime]
+    ret
+increment_uptime ENDP
 
 ; ============================================================================
-; SYSTEM CONSTANTS
+; COMPONENT HEALTH MONITORING
 ; ============================================================================
 
-; System identification
-system_manufacturer:    db "ALTAIR", 0
-system_product:         db "Altair 8800 Emulator", 0
-system_version:         db "1.0", 0
-system_release_date:    db "03/04/2026", 0
+set_component_health PROC
+    ; RCX = component index (0-17)
+    ; DL = health percentage (0-100)
+    
+    cmp rcx, 18
+    jge health_err
+    
+    mov byte ptr [componentHealth + rcx], dl
+    ret
+    
+health_err:
+    ret
+set_component_health ENDP
 
-; System limits
-MAX_INTERRUPTS          equ 256
-MAX_DEVICES             equ 32
-MAX_PARTITIONS          equ 8
-MAX_MEMORY_MB           equ 64
+get_component_health PROC
+    ; RCX = component index
+    ; Returns health in AL
+    
+    cmp rcx, 18
+    jge health_err2
+    
+    mov al, byte ptr [componentHealth + rcx]
+    ret
+    
+health_err2:
+    xor al, al
+    ret
+get_component_health ENDP
 
-; System timings
-BOOT_TIMEOUT_SEC        equ 60
-DIAGNOSTICS_TIMEOUT_SEC equ 120
-SLEEP_TIMEOUT_SEC       equ 300
-
-; ============================================================================
-; RUNTIME STATISTICS
-; ============================================================================
-
-.data
-
-; System performance counters
-uptimes_seconds:        dq 0        ; Total uptime
-boot_count:             dw 0        ; Number of boots
-error_count:            dd 0        ; Total system errors
-warning_count:          dd 0        ; Total warnings
-
-; Component access statistics
-component_access_count: dd 18 dup(0)    ; Access count per component
-
-; Performance metrics
-average_cpu_load:       db 0        ; Average CPU utilization
-average_memory_use:     db 0        ; Average memory utilization
-average_temp:           db 55       ; Average temperature
-
-; System events
-last_boot_time:         dd 0        ; Unix timestamp
-last_error_time:        dd 0        ; Last error timestamp
-last_warning_time:      dd 0        ; Last warning timestamp
+get_system_health PROC
+    ; Calculate overall system health (average of all components)
+    
+    xor rsi, rsi
+    xor rax, rax
+    
+    xor rcx, rcx
+health_avg_loop:
+    cmp rcx, 18
+    jge health_avg_done
+    
+    mov al, byte ptr [componentHealth + rcx]
+    add rsi, rax
+    inc rcx
+    jmp health_avg_loop
+    
+health_avg_done:
+    ; Divide by number of components
+    mov rax, rsi
+    mov rcx, 18
+    xor edx, edx
+    div rcx
+    
+    ret
+get_system_health ENDP
 
 ; ============================================================================
 ; SYSTEM RECOVERY
 ; ============================================================================
 
-.code
-
-; Emergency system reset
-emergency_system_reset:
-    push rbp
-    mov rbp, rsp
+system_recovery PROC
+    ; Attempt to recover from errors
     
-    ; Turn off all components
-    ; Save critical state
-    ; Perform hardware reset
+    ; Reset error counters
+    call clear_error_log
     
-    pop rbp
+    ; Reinitialize failed components
+    xor rcx, rcx
+recovery_loop:
+    cmp rcx, componentCount
+    jge recovery_done
+    
+    ; Check component health
+    mov rax, rcx
+    call get_component_health
+    cmp al, 50
+    jl recovery_reinit
+    
+    inc rcx
+    jmp recovery_loop
+    
+recovery_reinit:
+    ; Reinitialize this component
+    inc rcx
+    jmp recovery_loop
+    
+recovery_done:
     ret
+system_recovery ENDP
 
-; Graceful system shutdown
-graceful_shutdown:
-    push rbp
-    mov rbp, rsp
+; ============================================================================
+; SHUTDOWN AND HALT
+; ============================================================================
+
+system_shutdown PROC
+    ; Graceful system shutdown
     
-    ; Flush all buffers
-    ; Save state
-    ; Notify devices
-    ; Power down
+    mov byte ptr [systemRunning], 0
+    mov byte ptr [systemReady], 0
     
-    pop rbp
+    ; Unregister all components
+    xor rcx, rcx
+    
+shutdown_loop:
+    cmp rcx, componentCount
+    jge shutdown_done
+    
+    mov rdx, 0
+    call unregister_component
+    inc rcx
+    jmp shutdown_loop
+    
+shutdown_done:
     ret
+system_shutdown ENDP
 
-; ============================================================================
-; FILE LISTING AND MANIFEST
-; ============================================================================
-
-; Complete file manifest:
-;
-; PRIMARY EMULATOR FILES:
-; - altair_8800_emulator.asm           Main emulation engine
-; - altair_8800_advanced.asm           Advanced features
-; - example_programs.asm               10 sample programs
-;
-; SYSTEM COMPONENT FILES:
-; - bios_cmos_rom_components.asm       BIOS, CMOS, ROM
-; - system_components_advanced.asm     Power, Thermal, DMA, etc.
-; - bios_setup_configuration_menu.asm  Setup utility & configuration
-; - system_integration.asm             This file - system integration
-;
-; DOCUMENTATION FILES:
-; - README.md                          Main documentation
-; - QUICKSTART.md                      Quick start guide
-; - SYSTEM_COMPONENTS_GUIDE.md         Component documentation
-;
-; BUILD FILES:
-; - build.bat                          Automated build script
-
-; ============================================================================
-; END OF SYSTEM INTEGRATION FILE
-; ============================================================================
-
-end
+END

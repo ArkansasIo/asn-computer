@@ -14,6 +14,42 @@ This is a complete x86-64 assembly language implementation of an Altair 8800 emu
 - **Mathematical Operations** (8/16/32/64-bit)
 - **Binary/Hex/Octal Conversion**
 - **Advanced Animations** (counter, chaser, pulse patterns)
+- **Configurable System Width** (16/32/64/128-bit)
+
+---
+
+## Bit Width Configuration (16/32/64/128)
+
+The emulator now supports selecting the active system configuration width.
+
+### Assembly Boot Menu (`SYSTEM_INIT.asm`)
+
+- Main menu includes `9. Bit System Config`
+- Config menu options:
+   - `1` => `16-bit`
+   - `2` => `32-bit`
+   - `3` => `64-bit`
+   - `4` => `128-bit`
+- Current configuration is shown in the main menu.
+
+### Python Simulator (`emulator_simulator.py`)
+
+Run with a configured width:
+
+```bash
+python emulator_simulator.py --bit-mode 16
+python emulator_simulator.py --bit-mode 32
+python emulator_simulator.py --bit-mode 64
+python emulator_simulator.py --bit-mode 128
+```
+
+The selected mode is applied to configured-word arithmetic demonstrations and reported in system information/statistics.
+
+### Tkinter UI (`altair_ui_interface.py`)
+
+- Includes a `SYSTEM WIDTH` selector with `16/32/64/128`
+- Address bus and PC ranges/masks follow the selected width
+- Front-panel address LEDs continue to show the lower 16 bits for compatibility
 
 ---
 

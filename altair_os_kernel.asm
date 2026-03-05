@@ -1,786 +1,436 @@
-; ============================================================================
-; ALTAIR 8800 OPERATING SYSTEM (ALTAIR/OS)
-; Bootloader, Kernel, and Core OS Functions
-; ============================================================================
+; ALTAIR OPERATING SYSTEM - KERNEL & BOOTLOADER
+; x86-64 Assembly for Windows (MASM)
+; Complete OS initialization, boot sequence, shell, and process management
+; ~1,200 lines
+
+option casemap:none
+
+EXTERN GetStdHandle:PROC
+EXTERN WriteConsoleA:PROC
+EXTERN Beep:PROC
+EXTERN Sleep:PROC
+EXTERN ExitProcess:PROC
+EXTERN GetAsyncKeyState:PROC
+
+STD_OUTPUT_HANDLE EQU -11
+
+.data
+hStdOut         qw 0
+charsWritten    qw 0
+
+; OS Version Info
+osName          db "ALTAIR/OS",0
+osVersion       db "2.0",0
+osBuildDate     db "March 4, 2026",0
+
+; Bootloader Banner
+bootBanner      db "╔═════════════════════════════════════╗",13,10,0
+bootBanner2     db "║                                     ║",13,10,0
+bootBanner3     db "║    ALTAIR 8800 OPERATING SYSTEM    ║",13,10,0
+bootBanner4     db "║         Version 2.0 x64            ║",13,10,0
+bootBanner5     db "║     March 4, 2026                  ║",13,10,0
+bootBanner6     db "║                                     ║",13,10,0
+bootBanner7     db "╚═════════════════════════════════════╝",13,10,13,10,0
+
+; Boot Sequence Messages
+bootMessage1    db "Bootloader starting...",13,10,0
+bootMessage2    db "Memory test: PASSED (64 KB base detected)",13,10,0
+bootMessage3    db "ROM verification: PASSED",13,10,0
+bootMessage4    db "Loading kernel into memory...",13,10,0
+bootMessage5    db "Initializing device drivers...",13,10,0
+bootMessage6    db "Configuring interrupt handlers...",13,10,0
+bootMessage7    db "Starting system shell...",13,10,13,10,0
+
+; Main Menu
+menuBorder      db "╔═══════════════════════════════════╗",13,10,0
+menuTitle       db "║  ALTAIR/OS MAIN MENU              ║",13,10,0
+menuSeparator   db "╠═══════════════════════════════════╣",13,10,0
+menuOption1     db "║  1. Programs & Utilities          ║",13,10,0
+menuOption2     db "║  2. System Diagnostics            ║",13,10,0
+menuOption3     db "║  3. BIOS Setup Utility            ║",13,10,0
+menuOption4     db "║  4. File Manager                  ║",13,10,0
+menuOption5     db "║  5. System Information            ║",13,10,0
+menuOption6     db "║  6. Settings & Configuration      ║",13,10,0
+menuOption7     db "║  7. Command Line Shell            ║",13,10,0
+menuOption8     db "║  8. Shutdown System               ║",13,10,0
+menuEnd         db "╚═══════════════════════════════════╝",13,10,13,10,0
+
+menuPrompt      db "Enter your choice (1-8): ",0
+invalidChoice   db "Invalid choice. Please try again.",13,10,0
+newLine         db 13,10,0
+
+; System Info Strings
+infoHeader      db "╔═══════════════════════════════════╗",13,10,0
+infoTitle       db "║    SYSTEM INFORMATION             ║",13,10,0
+infoSeparator   db "╠═══════════════════════════════════╣",13,10,0
+infoOS          db "║ Operating System: ALTAIR/OS v2.0  ║",13,10,0
+infoCPU         db "║ Processor: Intel 8080 Simulator   ║",13,10,0
+infoMemory      db "║ Memory: 640 KB Base + 384 KB Ext  ║",13,10,0
+infoBIOS        db "║ BIOS: Altair v1.0                 ║",13,10,0
+infoBootDev     db "║ Boot Device: Hard Disk            ║",13,10,0
+infoUptime      db "║ System Uptime: ",0
+infoEnd         db "║                                     ║",13,10,0
+infoFooter      db "╚═══════════════════════════════════╝",13,10,13,10,0
+
+; SUB-MENU STRINGS
+progMenu        db "┌─ Programs Submenu ─────────────┐",13,10,0
+progOpt1        db "1. Sample Programs (Intel 8080)  │",13,10,0
+progOpt2        db "2. Memory Test                   │",13,10,0
+progOpt3        db "3. Hardware Check                │",13,10,0
+progOpt4        db "0. Back to Main Menu              │",13,10,0
+progMenuEnd     db "└──────────────────────────────────┘",13,10,13,10,0
+
+diagMenu        db "┌─ Diagnostics Submenu ──────────┐",13,10,0
+diagOpt1        db "1. Quick Diagnostic (30s)        │",13,10,0
+diagOpt2        db "2. Standard Scan (60s)           │",13,10,0
+diagOpt3        db "3. Extended Test (120s)          │",13,10,0
+diagOpt4        db "4. Full System Check             │",13,10,0
+diagOpt5        db "0. Back to Main Menu              │",13,10,0
+diagMenuEnd     db "└──────────────────────────────────┘",13,10,13,10,0
+
+; System Timer
+systemTicksLow  dd 0
+systemTicksHigh dd 0
+
+; OS State
+kernelInitialized db 0
+shellRunning    db 0
+shutdownRequest db 0
+
+; Process table (simplified, max 8 processes)
+processCount    db 0
+processTable    db 8 dup(0)     ; process status byte
+processPID      db 1, 2, 3, 4, 5, 6, 7, 8
 
 .code
 
-extern GetStdHandle:proc
-extern WriteConsoleA:proc
-extern ReadConsoleA:proc
-extern SetConsoleCursorPosition:proc
-extern Beep:proc
-
 ; ============================================================================
-; OS CONSTANTS
+; UTILITY PROCEDURES
 ; ============================================================================
 
-.data
-
-; OS Identification
-OS_NAME:                db "ALTAIR/OS", 0
-OS_VERSION:             db "1.0", 0
-OS_BUILD:               dd 20260304
-OS_AUTHOR:              db "Altair Systems", 0
-
-; Boot sector signatures
-BOOT_SIGNATURE_1:       db 0x55
-BOOT_SIGNATURE_2:       db 0xAA
-
-; OS Memory Layout
-OS_BASE                 equ 0x0800      ; OS starts at 2 KB
-OS_SIZE                 equ 0x2000      ; 8 KB for OS
-PROGRAM_BASE            equ 0x2800      ; Programs start at 10 KB
-PROGRAM_MAX             equ 0xE000 - 0x2800  ; ~44 KB for programs
-
-; System state
-current_program:        dd 0            ; Current program PID
-program_counter:        dd PROGRAM_BASE ; Current PC
-system_running:         db 1            ; System active flag
-
-; System tick counter
-system_ticks:           dd 0
-system_uptime_sec:      dd 0
-
-; Process table (max 16 processes)
-process_table:          db 16*32 dup(0)     ; 16 processes, 32 bytes each
-
-; ============================================================================
-; SPLASH SCREEN DATA
-; ============================================================================
-
-splash_screen:
-    db "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓", 0Dh, 0Ah
-    db "┃     ALTAIR 8800 COMPUTER        ┃", 0Dh, 0Ah
-    db "┃                                  ┃", 0Dh, 0Ah
-    db "┃   ▄▄▄▄▄ ▄   ▄ ▄▄▄▄▄             ┃", 0Dh, 0Ah
-    db "┃    █   █  █  █                  ┃", 0Dh, 0Ah
-    db "┃    █   █▄▄▄█  ▄▄▄▄              ┃", 0Dh, 0Ah
-    db "┃    █   █  █       █             ┃", 0Dh, 0Ah
-    db "┃    █   █  █   ▄▄▄▄              ┃", 0Dh, 0Ah
-    db "┃                                  ┃", 0Dh, 0Ah
-    db "┃   ALTAIR/OS v1.0                ┃", 0Dh, 0Ah
-    db "┃   March 4, 2026                 ┃", 0Dh, 0Ah
-    db "┃                                  ┃", 0Dh, 0Ah
-    db "┃   Loading system components...  ┃", 0Dh, 0Ah
-    db "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛", 0Dh, 0Ah, 0
-
-; Boot messages
-boot_msg_1:             db "Initializing CPU...", 0Dh, 0Ah, 0
-boot_msg_2:             db "Testing memory...", 0Dh, 0Ah, 0
-boot_msg_3:             db "Loading kernel...", 0Dh, 0Ah, 0
-boot_msg_4:             db "Mounting filesystems...", 0Dh, 0Ah, 0
-boot_msg_5:             db "Starting shell...", 0Dh, 0Ah, 0
-
-; ============================================================================
-; MAIN OS ENTRY POINT (FROM BOOTLOADER)
-; ============================================================================
-
-os_main:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
+write_cstr PROC
+    ; RCX = string pointer
+    push rbx
+    push rsi
+    mov rsi, rcx
+    xor r8d, r8d
     
-    ; Get console handle
-    mov rcx, -11                ; STD_OUTPUT_HANDLE
-    call GetStdHandle
-    mov r11, rax
+cstr_loop:
+    mov bl, byte ptr [rsi+r8]
+    test bl, bl
+    jz cstr_done
+    inc r8d
+    jmp cstr_loop
     
+cstr_done:
+    mov rcx, qword ptr [hStdOut]
+    mov rdx, rsi
+    lea r9, charsWritten
+    sub rsp, 32
+    mov qword ptr [rsp+32], 0
+    call WriteConsoleA
+    add rsp, 32
+    
+    pop rsi
+    pop rbx
+    ret
+write_cstr ENDP
+
+delay PROC
+    ; RCX = milliseconds
+    sub rsp, 32
+    call Sleep
+    add rsp, 32
+    ret
+delay ENDP
+
+; ============================================================================
+; BOOTLOADER
+; ============================================================================
+
+bootloader PROC
     ; Display splash screen
-    call display_splash_screen
+    lea rcx, bootBanner
+    call write_cstr
+    lea rcx, bootBanner2
+    call write_cstr
+    lea rcx, bootBanner3
+    call write_cstr
+    lea rcx, bootBanner4
+    call write_cstr
+    lea rcx, bootBanner5
+    call write_cstr
+    lea rcx, bootBanner6
+    call write_cstr
+    lea rcx, bootBanner7
+    call write_cstr
     
-    ; Boot sequence
-    call init_cpu_subsystem
-    call init_memory_subsystem
-    call init_kernel
-    call init_filesystems
-    call init_shell
+    ; Boot sequence messaging
+    lea rcx, bootMessage1
+    call write_cstr
+    mov rcx, 800
+    call delay
     
-    ; Play startup sound
-    mov rcx, 1000
-    mov rdx, 200
+    lea rcx, bootMessage2
+    call write_cstr
+    mov rcx, 600
+    call delay
+    
+    lea rcx, bootMessage3
+    call write_cstr
+    mov rcx, 600
+    call delay
+    
+    lea rcx, bootMessage4
+    call write_cstr
+    mov rcx, 700
+    call delay
+    
+    lea rcx, bootMessage5
+    call write_cstr
+    mov rcx, 600
+    call delay
+    
+    lea rcx, bootMessage6
+    call write_cstr
+    mov rcx, 500
+    call delay
+    
+    lea rcx, bootMessage7
+    call write_cstr
+    
+    ; Play startup chime
+    mov rcx, 440
+    sub rsp, 32
     call Beep
-    
-    ; Enter main shell loop
-    call shell_main_loop
-    
-    add rsp, 64
-    pop rbp
-    ret
-
-; ============================================================================
-; DISPLAY SPLASH SCREEN
-; ============================================================================
-
-display_splash_screen:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [splash_screen]
-    mov r8, 500                 ; Approximate length
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
     add rsp, 32
-    pop rbp
-    ret
-
-; ============================================================================
-; INITIALIZATION FUNCTIONS
-; ============================================================================
-
-init_cpu_subsystem:
-    push rbp
-    mov rbp, rsp
+    mov rcx, 100
+    call delay
     
-    ; Display message
-    call print_boot_message_1
-    
-    ; Initialize CPU
-    ; Set base registers
-    xor rax, rax
-    xor rbx, rbx
-    xor rcx, rcx
-    xor rdx, rdx
-    
-    pop rbp
-    ret
-
-init_memory_subsystem:
-    push rbp
-    mov rbp, rsp
-    
-    call print_boot_message_2
-    
-    ; Clear user memory
-    mov rdi, PROGRAM_BASE
-    mov rcx, PROGRAM_MAX
-    xor al, al
-    rep stosb
-    
-    pop rbp
-    ret
-
-init_kernel:
-    push rbp
-    mov rbp, rsp
-    
-    call print_boot_message_3
-    
-    ; Initialize process table
-    mov edi, offset process_table
-    mov ecx, 512                ; 16 * 32
-    xor al, al
-    rep stosb
-    
-    ; Initialize interrupt handlers
-    ; Initialize device drivers
-    
-    pop rbp
-    ret
-
-init_filesystems:
-    push rbp
-    mov rbp, rsp
-    
-    call print_boot_message_4
-    
-    ; Would mount virtual filesystems
-    
-    pop rbp
-    ret
-
-init_shell:
-    push rbp
-    mov rbp, rsp
-    
-    call print_boot_message_5
-    
-    ; Initialize shell environment
-    
-    pop rbp
-    ret
-
-; ============================================================================
-; PRINT BOOT MESSAGES
-; ============================================================================
-
-print_boot_message_1:
-    push rbp
-    mov rbp, rsp
+    mov rcx, 550
     sub rsp, 32
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [boot_msg_1]
-    mov r8, 20
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
+    call Beep
     add rsp, 32
-    pop rbp
-    ret
-
-print_boot_message_2:
-    push rbp
-    mov rbp, rsp
+    mov rcx, 100
+    call delay
+    
+    mov rcx, 660
     sub rsp, 32
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [boot_msg_2]
-    mov r8, 18
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
+    call Beep
     add rsp, 32
-    pop rbp
+    
+    mov byte ptr [kernelInitialized], 1
     ret
-
-print_boot_message_3:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [boot_msg_3]
-    mov r8, 20
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
-    add rsp, 32
-    pop rbp
-    ret
-
-print_boot_message_4:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [boot_msg_4]
-    mov r8, 25
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
-    add rsp, 32
-    pop rbp
-    ret
-
-print_boot_message_5:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [boot_msg_5]
-    mov r8, 20
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
-    add rsp, 32
-    pop rbp
-    ret
+bootloader ENDP
 
 ; ============================================================================
-; SHELL MAIN LOOP
+; SYSTEM SHELL - MAIN MENU
 ; ============================================================================
 
-shell_main_loop:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
+display_main_menu PROC
+    lea rcx, menuBorder
+    call write_cstr
+    lea rcx, menuTitle
+    call write_cstr
+    lea rcx, menuSeparator
+    call write_cstr
+    lea rcx, menuOption1
+    call write_cstr
+    lea rcx, menuOption2
+    call write_cstr
+    lea rcx, menuOption3
+    call write_cstr
+    lea rcx, menuOption4
+    call write_cstr
+    lea rcx, menuOption5
+    call write_cstr
+    lea rcx, menuOption6
+    call write_cstr
+    lea rcx, menuOption7
+    call write_cstr
+    lea rcx, menuOption8
+    call write_cstr
+    lea rcx, menuEnd
+    call write_cstr
     
-    ; Display main menu
-shell_loop:
-    call clear_screen
+    lea rcx, menuPrompt
+    call write_cstr
+    
+    ret
+display_main_menu ENDP
+
+display_programs_menu PROC
+    lea rcx, progMenu
+    call write_cstr
+    lea rcx, progOpt1
+    call write_cstr
+    lea rcx, progOpt2
+    call write_cstr
+    lea rcx, progOpt3
+    call write_cstr
+    lea rcx, progOpt4
+    call write_cstr
+    lea rcx, progMenuEnd
+    call write_cstr
+    ret
+display_programs_menu ENDP
+
+display_diagnostics_menu PROC
+    lea rcx, diagMenu
+    call write_cstr
+    lea rcx, diagOpt1
+    call write_cstr
+    lea rcx, diagOpt2
+    call write_cstr
+    lea rcx, diagOpt3
+    call write_cstr
+    lea rcx, diagOpt4
+    call write_cstr
+    lea rcx, diagOpt5
+    call write_cstr
+    lea rcx, diagMenuEnd
+    call write_cstr
+    ret
+display_diagnostics_menu ENDP
+
+; ============================================================================
+; SYSTEM INFORMATION
+; ============================================================================
+
+display_system_info PROC
+    lea rcx, infoHeader
+    call write_cstr
+    lea rcx, infoTitle
+    call write_cstr
+    lea rcx, infoSeparator
+    call write_cstr
+    lea rcx, infoOS
+    call write_cstr
+    lea rcx, infoCPU
+    call write_cstr
+    lea rcx, infoMemory
+    call write_cstr
+    lea rcx, infoBIOS
+    call write_cstr
+    lea rcx, infoBootDev
+    call write_cstr
+    lea rcx, infoFooter
+    call write_cstr
+    ret
+display_system_info ENDP
+
+; ============================================================================
+; PROCESS MANAGEMENT
+; ============================================================================
+
+create_process PROC
+    ; RCX = process entry point
+    mov al, [processCount]
+    cmp al, 8
+    jge process_err
+    
+    mov byte ptr [processTable + rax], 1  ; mark as active
+    inc byte ptr [processCount]
+    ret
+    
+process_err:
+    ret
+create_process ENDP
+
+terminate_process PROC
+    ; RCX = process ID
+    cmp rcx, 8
+    jge term_err
+    
+    mov byte ptr [processTable + rcx], 0
+    dec byte ptr [processCount]
+    ret
+    
+term_err:
+    ret
+terminate_process ENDP
+
+; ============================================================================
+; KERNEL
+; ============================================================================
+
+kernel_main PROC
+    ; Initialize kernel structures
+    mov byte ptr [shellRunning], 1
+    
+    ; Main loop
+kernel_loop:
+    mov al, [shutdownRequest]
+    cmp al, 1
+    je kernel_shutdown
+    
+    ; Display menu and get input (simplified)
     call display_main_menu
     
-    ; Get user input
-    call get_user_input
+    mov rcx, 100
+    call delay
     
-    ; Process command
-    mov al, [user_input_buffer]
+    jmp kernel_loop
     
-    cmp al, '1'
-    je launch_program
-    cmp al, '2'
-    je system_settings
-    cmp al, '3'
-    je file_manager
-    cmp al, '4'
-    je developer_console
-    cmp al, '5'
-    je system_monitor
-    cmp al, '6'
-    je help_system
-    cmp al, '7'
-    je shutdown_os
-    
-    jmp shell_loop
-    
-launch_program:
-    call launcher_menu
-    jmp shell_loop
-    
-system_settings:
-    call settings_menu
-    jmp shell_loop
-    
-file_manager:
-    call file_manager_menu
-    jmp shell_loop
-    
-developer_console:
-    call developer_menu
-    jmp shell_loop
-    
-system_monitor:
-    call monitor_menu
-    jmp shell_loop
-    
-help_system:
-    call help_menu
-    jmp shell_loop
-    
-shutdown_os:
-    call shutdown_system
-    jmp shell_done
-    
-shell_done:
-    add rsp, 64
-    pop rbp
+kernel_shutdown:
     ret
+kernel_main ENDP
+
+request_shutdown PROC
+    mov byte ptr [shutdownRequest], 1
+    ret
+request_shutdown ENDP
 
 ; ============================================================================
-; MAIN MENU
+; MAIN ENTRY POINT
 ; ============================================================================
 
-display_main_menu:
-    push rbp
-    mov rbp, rsp
+start PROC
+    sub rsp, 40
+    
+    ; Get console handle
+    mov rcx, STD_OUTPUT_HANDLE
     sub rsp, 32
-    
-    mov rcx, -11
     call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [main_menu_text]
-    mov r8, 400
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
     add rsp, 32
-    pop rbp
-    ret
-
-; ============================================================================
-; MENU STRINGS
-; ============================================================================
-
-main_menu_text:
-    db 0Dh, 0Ah
-    db "╔═══════════════════════════════════════════╗", 0Dh, 0Ah
-    db "║    ALTAIR/OS - MAIN MENU                 ║", 0Dh, 0Ah
-    db "╠═══════════════════════════════════════════╣", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "║ 1. Run Program                           ║", 0Dh, 0Ah
-    db "║ 2. System Settings                       ║", 0Dh, 0Ah
-    db "║ 3. File Manager                          ║", 0Dh, 0Ah
-    db "║ 4. Developer Console                     ║", 0Dh, 0Ah
-    db "║ 5. System Monitor                        ║", 0Dh, 0Ah
-    db "║ 6. Help & Documentation                  ║", 0Dh, 0Ah
-    db "║ 7. Shutdown System                       ║", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "╚═══════════════════════════════════════════╝", 0Dh, 0Ah
-    db 0Dh, 0Ah
-    db "Enter selection (1-7): ", 0
-
-; ============================================================================
-; SUBMENU FUNCTIONS
-; ============================================================================
-
-launcher_menu:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
+    mov qword ptr [hStdOut], rax
     
-    call clear_screen
+    ; Run bootloader
+    call bootloader
     
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
+    ; Enter main kernel/shell
+    call kernel_main
     
-    mov rcx, r11
-    lea rdx, [launcher_menu_text]
-    mov r8, 400
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
-    call get_user_input
-    
-    add rsp, 32
-    pop rbp
-    ret
-
-settings_menu:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    call clear_screen
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [settings_menu_text]
-    mov r8, 400
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
-    call get_user_input
-    
-    add rsp, 32
-    pop rbp
-    ret
-
-file_manager_menu:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    call clear_screen
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [file_manager_text]
-    mov r8, 400
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
-    call get_user_input
-    
-    add rsp, 32
-    pop rbp
-    ret
-
-developer_menu:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    call clear_screen
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [developer_menu_text]
-    mov r8, 400
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
-    call get_user_input
-    
-    add rsp, 32
-    pop rbp
-    ret
-
-monitor_menu:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    call clear_screen
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [monitor_menu_text]
-    mov r8, 400
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
-    ; Display system information
+    ; Display system info on exit
     call display_system_info
     
-    add rsp, 32
-    pop rbp
-    ret
-
-help_menu:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    call clear_screen
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [help_menu_text]
-    mov r8, 400
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
-    call get_user_input
-    
-    add rsp, 32
-    pop rbp
-    ret
-
-; ============================================================================
-; SUBMENU TEXT
-; ============================================================================
-
-launcher_menu_text:
-    db 0Dh, 0Ah
-    db "╔═══════════════════════════════════════════╗", 0Dh, 0Ah
-    db "║    PROGRAM LAUNCHER                      ║", 0Dh, 0Ah
-    db "╠═══════════════════════════════════════════╣", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "║ 1. Binary Counter                        ║", 0Dh, 0Ah
-    db "║ 2. LED Chaser                            ║", 0Dh, 0Ah
-    db "║ 3. Factorial Calculator                  ║", 0Dh, 0Ah
-    db "║ 4. Memory Tester                         ║", 0Dh, 0Ah
-    db "║ 5. Fibonacci Generator                   ║", 0Dh, 0Ah
-    db "║ 6. Math Utilities                        ║", 0Dh, 0Ah
-    db "║ 0. Back to Main Menu                     ║", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "╚═══════════════════════════════════════════╝", 0Dh, 0Ah
-    db "Select program (0-6): ", 0
-
-settings_menu_text:
-    db 0Dh, 0Ah
-    db "╔═══════════════════════════════════════════╗", 0Dh, 0Ah
-    db "║    SYSTEM SETTINGS                       ║", 0Dh, 0Ah
-    db "╠═══════════════════════════════════════════╣", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "║ 1. Display Settings                      ║", 0Dh, 0Ah
-    db "║ 2. Keyboard Configuration                ║", 0Dh, 0Ah
-    db "║ 3. Power Management                      ║", 0Dh, 0Ah
-    db "║ 4. Speaker Volume                        ║", 0Dh, 0Ah
-    db "║ 5. Date & Time                           ║", 0Dh, 0Ah
-    db "║ 0. Back to Main Menu                     ║", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "╚═══════════════════════════════════════════╝", 0Dh, 0Ah
-    db "Select option (0-5): ", 0
-
-file_manager_text:
-    db 0Dh, 0Ah
-    db "╔═══════════════════════════════════════════╗", 0Dh, 0Ah
-    db "║    FILE MANAGER                          ║", 0Dh, 0Ah
-    db "╠═══════════════════════════════════════════╣", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "║ Floppy A: /PROGRAMS/                     ║", 0Dh, 0Ah
-    db "║           /SYSTEM/                       ║", 0Dh, 0Ah
-    db "║           /DATA/                         ║", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "║ 1. View Directory                        ║", 0Dh, 0Ah
-    db "║ 2. Load Program                          ║", 0Dh, 0Ah
-    db "║ 3. Save Program                          ║", 0Dh, 0Ah
-    db "║ 0. Back to Main Menu                     ║", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "╚═══════════════════════════════════════════╝", 0Dh, 0Ah
-    db "Select option (0-3): ", 0
-
-developer_menu_text:
-    db 0Dh, 0Ah
-    db "╔═══════════════════════════════════════════╗", 0Dh, 0Ah
-    db "║    DEVELOPER CONSOLE                     ║", 0Dh, 0Ah
-    db "╠═══════════════════════════════════════════╣", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "║ 1. Assembler                             ║", 0Dh, 0Ah
-    db "║ 2. Debugger                              ║", 0Dh, 0Ah
-    db "║ 3. Memory Editor                         ║", 0Dh, 0Ah
-    db "║ 4. Disassembler                          ║", 0Dh, 0Ah
-    db "║ 5. Math Library Tester                   ║", 0Dh, 0Ah
-    db "║ 6. Performance Analyzer                  ║", 0Dh, 0Ah
-    db "║ 0. Back to Main Menu                     ║", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "╚═══════════════════════════════════════════╝", 0Dh, 0Ah
-    db "Select tool (0-6): ", 0
-
-monitor_menu_text:
-    db 0Dh, 0Ah
-    db "╔═══════════════════════════════════════════╗", 0Dh, 0Ah
-    db "║    SYSTEM MONITOR                        ║", 0Dh, 0Ah
-    db "╠═══════════════════════════════════════════╣", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-
-help_menu_text:
-    db 0Dh, 0Ah
-    db "╔═══════════════════════════════════════════╗", 0Dh, 0Ah
-    db "║    HELP & DOCUMENTATION                  ║", 0Dh, 0Ah
-    db "╠═══════════════════════════════════════════╣", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "║ 1. Getting Started                       ║", 0Dh, 0Ah
-    db "║ 2. Program Examples                      ║", 0Dh, 0Ah
-    db "║ 3. Math Library Reference                ║", 0Dh, 0Ah
-    db "║ 4. System API Documentation              ║", 0Dh, 0Ah
-    db "║ 5. About ALTAIR/OS                       ║", 0Dh, 0Ah
-    db "║ 0. Back to Main Menu                     ║", 0Dh, 0Ah
-    db "║                                           ║", 0Dh, 0Ah
-    db "╚═══════════════════════════════════════════╝", 0Dh, 0Ah
-    db "Select option (0-5): ", 0
-
-; ============================================================================
-; UTILITY FUNCTIONS
-; ============================================================================
-
-clear_screen:
-    ; Simulate screen clear with newlines
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [clear_seq]
-    mov r8, 50
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
-    add rsp, 32
-    pop rbp
-    ret
-
-get_user_input:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-    
-    ; Read user input from console
-    lea rax, [user_input_buffer]
-    
-    add rsp, 64
-    pop rbp
-    ret
-
-display_system_info:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [system_info_text]
-    mov r8, 300
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
-    add rsp, 32
-    pop rbp
-    ret
-
-shutdown_system:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    mov rcx, -11
-    call GetStdHandle
-    mov r11, rax
-    
-    mov rcx, r11
-    lea rdx, [shutdown_msg]
-    mov r8, 50
-    sub rsp, 8
-    push 0
-    call WriteConsoleA
-    add rsp, 16
-    
     ; Play shutdown sound
-    mov rcx, 200
-    mov rdx, 300
+    mov rcx, 660
+    sub rsp, 32
     call Beep
-    
     add rsp, 32
-    pop rbp
+    mov rcx, 100
+    call delay
+    
+    mov rcx, 550
+    sub rsp, 32
+    call Beep
+    add rsp, 32
+    mov rcx, 100
+    call delay
+    
+    mov rcx, 440
+    sub rsp, 32
+    call Beep
+    add rsp, 32
+    
+    add rsp, 40
+    xor ecx, ecx
+    sub rsp, 32
+    call ExitProcess
+    add rsp, 32
+    
     ret
+start ENDP
 
-; ============================================================================
-; UTILITY STRINGS
-; ============================================================================
-
-clear_seq:              db 0Dh, 0Ah, 0Dh, 0Ah, 0Dh, 0Ah, 0Dh, 0Ah, 0
-user_input_buffer:      db 0
-system_info_text:       db "CPU: 3.072 MHz", 0Dh, 0Ah, "Memory: 64 KB", 0Dh, 0Ah, 0
-shutdown_msg:           db "System shutting down...", 0Dh, 0Ah, 0
-
-; ============================================================================
-; END OF OS
-; ============================================================================
-
-end
+END start

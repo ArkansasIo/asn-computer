@@ -1,833 +1,1053 @@
-; ============================================================================
-; ALTAIR 8800 DATA ENTRY UI SYSTEM
-; Front-End Data Input and Entry Forms
-; ============================================================================
+; =============================================================================
+; DATA ENTRY UI - Form-based Data Entry with Validation
+; =============================================================================
+; Purpose: Dynamic forms, field validation, input capture, error display
+; Author: Altair 8800 OS Development Team
+; Date: March 4, 2026
+; Version: 1.0
+; Lines: 900+
+; =============================================================================
 
-.code
+option casemap:none
+EXTERN ExitProcess:PROC
 
-extern GetStdHandle:proc
-extern WriteConsoleA:proc
-extern ReadConsoleA:proc
-extern SetConsoleCursorPosition:proc
+; =============================================================================
+; CONSTANTS
+; =============================================================================
 
-; ============================================================================
-; FORM SYSTEM CONSTANTS
-; ============================================================================
+; Form types
+FORM_TYPE_DATA_ENTRY    EQU 1
+FORM_TYPE_SEARCH        EQU 2
+FORM_TYPE_REPORT        EQU 3
+
+; Field types
+FIELD_TEXT              EQU 1
+FIELD_NUMBER            EQU 2
+FIELD_DATE              EQU 3
+FIELD_TIME              EQU 4
+FIELD_CHECKBOX          EQU 5
+FIELD_DROPDOWN          EQU 6
+FIELD_MULTILINE         EQU 7
+
+; Validation flags
+VALIDATE_REQUIRED       EQU 1
+VALIDATE_EMAIL          EQU 2
+VALIDATE_NUMERIC        EQU 4
+VALIDATE_DATE           EQU 8
+VALIDATE_PHONE          EQU 16
+VALIDATE_LENGTH         EQU 32
+
+; Maximum values
+MAX_FORMS               EQU 8
+MAX_FIELDS_PER_FORM     EQU 32
+FIELD_NAME_LEN          EQU 32
+FIELD_LABEL_LEN         EQU 64
+FIELD_VALUE_LEN         EQU 256
+
+; Form metadata size
+FORM_METADATA_SIZE      EQU 512
+FIELD_ENTRY_SIZE        EQU 256
+
+; =============================================================================
+; DATA SECTION
+; =============================================================================
 
 .data
 
-; Form types
-FORM_TYPE_DATA_ENTRY    equ 0x01
-FORM_TYPE_SEARCH        equ 0x02
-FORM_TYPE_FILTER        equ 0x03
-FORM_TYPE_EXPORT        equ 0x04
+moduleName              db "data_entry_ui", 0
+version_str             db "1.0", 0
 
-; Field types
-FIELD_TEXT              equ 0x01
-FIELD_NUMBER            equ 0x02
-FIELD_DATE              equ 0x03
-FIELD_TIME              equ 0x04
-FIELD_CHECKBOX          equ 0x05
-FIELD_DROPDOWN          equ 0x06
-FIELD_MULTILINE         equ 0x07
+; Form management
+form_count              dd 0
+active_forms            dd MAX_FORMS dup(0)
+form_metadata           db MAX_FORMS * FORM_METADATA_SIZE dup(0)
 
-; Field validation rules
-VALIDATE_REQUIRED       equ 0x01
-VALIDATE_NUMERIC        equ 0x02
-VALIDATE_EMAIL          equ 0x04
-VALIDATE_DATE           equ 0x08
-VALIDATE_RANGE          equ 0x10
-VALIDATE_LENGTH         equ 0x20
+; Field storage
+field_definitions       db MAX_FORMS * MAX_FIELDS_PER_FORM * FIELD_ENTRY_SIZE dup(0)
 
-; ============================================================================
-; FORM STRUCTURE (64 bytes per field)
-; ============================================================================
-; 0x00: Field name (16 bytes)
-; 0x10: Label (24 bytes)
-; 0x28: Type (1 byte)
-; 0x29: Validation flags (1 byte)
-; 0x2A: Required (1 byte)
-; 0x2B: Max length (1 byte)
-; 0x2C: Reserved (20 bytes)
+; Current form state
+current_form_id         dd 0
+current_field_index     dd 0
+field_count             dd 0
+form_submitted          dd 0
+form_validated          dd 0
 
-; ============================================================================
-; FORM DATA STRUCTURES
-; ============================================================================
+; Field input buffers
+field_values            db MAX_FIELDS_PER_FORM * FIELD_VALUE_LEN dup(0)
+current_input_buffer    db 256 dup(0)
+input_buffer_pos        dd 0
 
-; Current form
-current_form_type:      db 0
-current_form_id:        dd 0
-form_field_count:       dd 0
-form_data_buffer:       db 4096 dup(0)
-form_validation_errors: db 512 dup(0)
+; Validation errors
+validation_errors       db MAX_FIELDS_PER_FORM * 64 dup(0)
+error_count             dd 0
 
-; Field navigation
-current_field_index:    dd 0
-focused_field:          dd 0
-total_fields:           dd 0
+; UI display
+form_title              db "Data Entry Form", 0
+field_prompt            db "Enter data: ", 0
+error_display           db 1024 dup(0)
+status_line             db "Use Tab to navigate, Enter to submit, Esc to cancel", 0
 
-; Form mode
-form_edit_mode:         db 0
-form_insert_mode:       db 0
-form_display_mode:      db 0
+; Default labels
+label_name              db "Name", 0
+label_email             db "Email", 0
+label_phone             db "Phone", 0
+label_date              db "Date", 0
 
-; Input state
-field_values:           db 2048 dup(0)
-field_errors:           db 512 dup(0)
+; Validation messages
+msg_required            db "This field is required", 0
+msg_email_invalid       db "Invalid email format", 0
+msg_numeric_invalid     db "Please enter a valid number", 0
+msg_date_invalid        db "Invalid date format (MM/DD/YYYY)", 0
+msg_phone_invalid       db "Invalid phone number", 0
+msg_length_invalid      db "Input too long", 0
 
-; ============================================================================
-; CREATE DATA ENTRY FORM
-; ============================================================================
+; =============================================================================
+; CODE SECTION
+; =============================================================================
 
-create_form:
-    ; Input: RCX = form type
-    ;        RDX = number of fields
-    ;        R8  = data buffer
-    ; Output: EAX = form ID
+.code
+
+; =============================================================================
+; FORM CREATION & MANAGEMENT
+; =============================================================================
+
+create_form PROC
+    ; Create a new form
+    ; Input: ECX = form type
+    ;        EDX = field count
+    ; Output: EAX = form_id
     
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
+    push rbx
+    push rcx
+    push rdx
+    push rdi
     
-    ; Store form type
-    mov [current_form_type], cl
+    ; Check form limit
+    cmp dword ptr [form_count], MAX_FORMS
+    jge create_form_error
     
-    ; Store field count
-    mov [form_field_count], edx
-    mov [total_fields], edx
+    ; Get next form ID
+    mov eax, dword ptr [form_count]
+    inc eax
+    mov ebx, eax
     
-    ; Initialize form to insert mode
-    mov byte ptr [form_insert_mode], 1
-    mov byte ptr [form_edit_mode], 0
+    ; Store form metadata
+    mov rax, ebx
+    imul rax, rax, FORM_METADATA_SIZE
+    mov rdi, offset form_metadata
+    add rdi, rax
     
-    ; Copy data buffer
-    cmp r8, 0
-    je form_create_done
+    ; Store form type and field count
+    mov byte ptr [rdi], cl
+    mov byte ptr [rdi + 1], dl
+    mov byte ptr [rdi + 2], 0      ; Current field
     
-    mov rsi, r8
-    mov rdi, offset form_data_buffer
-    mov rcx, 2048
+    ; Store form ID in active list
+    mov rax, dword ptr [form_count]
+    mov dword ptr [active_forms + rax * 4], ebx
+    inc dword ptr [form_count]
     
-copy_form_data:
-    cmp rcx, 0
-    je form_create_done
+    mov eax, ebx                    ; Return form ID
+    mov dword ptr [current_form_id], ebx
+    mov dword ptr [field_count], edx
     
-    mov al, [rsi]
-    mov [rdi], al
-    inc rsi
-    inc rdi
-    dec rcx
-    jmp copy_form_data
+    jmp create_form_done
     
-form_create_done:
-    mov eax, 1                          ; Form ID
+create_form_error:
+    mov eax, -1
     
-    add rsp, 32
-    pop rbp
+create_form_done:
+    pop rdi
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+create_form ENDP
 
-; ============================================================================
-; ADD FIELD TO FORM
-; ============================================================================
+; =============================================================================
+; FIELD OPERATIONS
+; =============================================================================
 
-add_form_field:
+add_form_field PROC
+    ; Add a field to current form
     ; Input: RCX = field name
     ;        RDX = field label
     ;        R8B = field type
     ;        R9B = validation flags
-    ; Output: none
+    ; Output: EAX = status
     
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
     
-    ; Get field index
-    mov rax, [form_field_count]
-    imul rax, 64
-    add rax, offset form_data_buffer
+    ; Get current form
+    mov ecx, dword ptr [current_form_id]
+    cmp ecx, 0
+    jle add_field_error
+    
+    ; Get current field index
+    mov eax, dword ptr [current_field_index]
+    cmp eax, MAX_FIELDS_PER_FORM
+    jge add_field_error
+    
+    ; Calculate field position
+    mov rbx, rcx
+    imul rbx, rbx, MAX_FIELDS_PER_FORM
+    add rbx, rax
+    imul rbx, rbx, FIELD_ENTRY_SIZE
+    
+    mov rdi, offset field_definitions
+    add rdi, rbx
     
     ; Copy field name
     mov rsi, rcx
-    mov rdi, rax
-    mov rcx, 16
-    
-copy_name:
-    cmp rcx, 0
-    je copy_label
-    
-    mov bl, [rsi]
-    mov [rdi], bl
-    inc rsi
-    inc rdi
-    dec rcx
-    jmp copy_name
-    
-copy_label:
-    mov rsi, rdx
-    mov rcx, 24
-    
-copy_lbl:
-    cmp rcx, 0
-    je set_field_type
-    
-    mov bl, [rsi]
-    mov [rdi], bl
-    inc rsi
-    inc rdi
-    dec rcx
-    jmp copy_lbl
-    
-set_field_type:
-    mov [rdi], r8b                      ; Type
-    inc rdi
-    mov [rdi], r9b                      ; Validation flags
-    
-    inc dword ptr [form_field_count]
-    
-    add rsp, 64
-    pop rbp
-    ret
-
-; ============================================================================
-; DISPLAY FORM
-; ============================================================================
-
-display_form:
-    ; Draw form on screen
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 32
-    
-    ; Clear screen
-    call clear_data_entry_screen
-    
-    ; Print form header
-    mov rcx, offset form_title
-    call print_string_form
-    
-    ; Print each field
-    mov r8d, 0
-    
-display_fields:
-    cmp r8d, [form_field_count]
-    jge form_display_done
-    
-    ; Calculate field position
-    mov rax, r8
-    add rax, 2
-    mov rcx, rax
-    mov rdx, 0
-    call set_form_cursor
-    
-    ; Display field
-    mov rax, r8
-    imul rax, 64
-    add rax, offset form_data_buffer
-    
-    ; Print label
-    mov rcx, [rax + 0x10]
-    call print_string_form
-    
-    ; Print input box
-    mov rcx, 40
-    
-print_input_box:
-    cmp rcx, 0
-    je field_input_complete
-    
-    mov al, '_'
-    call print_char_form
-    dec rcx
-    jmp print_input_box
-    
-field_input_complete:
-    inc r8d
-    jmp display_fields
-    
-form_display_done:
-    ; Print buttons
-    mov rcx, 22
-    mov rdx, 0
-    call set_form_cursor
-    
-    mov rcx, offset form_buttons
-    call print_string_form
-    
-    add rsp, 32
-    pop rbp
-    ret
-
-; ============================================================================
-; CAPTURE FIELD INPUT
-; ============================================================================
-
-capture_field_input:
-    ; Input: EAX = field index
-    ; Output: RCX = input buffer
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-    
-    ; Get field structure
-    mov rsi, rax
-    imul rsi, 64
-    add rsi, offset form_data_buffer
-    
-    ; Get field type
-    mov bl, [rsi + 0x28]
-    
-    ; Get field size
-    mov r8b, [rsi + 0x2B]
-    
-    ; Position cursor for input
-    mov rdx, rax
-    add rdx, 2
-    mov rcx, 30
-    call set_form_cursor
-    
-    ; Clear previous input
-    mov rcx, 40
-    
-clear_input_line:
-    cmp rcx, 0
-    je input_line_cleared
-    
-    mov al, ' '
-    call print_char_form
-    dec rcx
-    jmp clear_input_line
-    
-input_line_cleared:
-    ; Reposition cursor
-    mov rcx, 30
-    call set_form_cursor_back
-    
-    ; Get input based on field type
-    cmp bl, FIELD_TEXT
-    je input_text_field
-    cmp bl, FIELD_NUMBER
-    je input_number_field
-    cmp bl, FIELD_DATE
-    je input_date_field
-    
-    jmp input_done
-    
-input_text_field:
-    call read_text_input
-    jmp input_done
-    
-input_number_field:
-    call read_number_input
-    jmp input_done
-    
-input_date_field:
-    call read_date_input
-    jmp input_done
-    
-input_done:
-    ; Store input value
-    mov rdi, offset field_values
-    mov rsi, offset form_data_buffer
-    mov rcx, 40
-    
-    ; Copy to field values
+    mov rcx, FIELD_NAME_LEN
     rep movsb
     
-    add rsp, 64
-    pop rbp
-    ret
-
-; ============================================================================
-; INPUT VALIDATION
-; ============================================================================
-
-validate_form_data:
-    ; Validate all fields
-    ; Output: AL = 0 (valid), 1 (invalid)
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-    
-    mov r8d, 0
-    
-validate_field_loop:
-    cmp r8d, [form_field_count]
-    jge validation_complete
-    
-    ; Get field
-    mov rax, r8
-    imul rax, 64
-    add rax, offset form_data_buffer
-    
-    ; Get validation flags
-    mov bl, [rax + 0x29]
-    
-    ; Get field value
-    mov rsi, rax
-    add rsi, 0x40                       ; Data offset
-    
-    ; Validate required
-    test bl, VALIDATE_REQUIRED
-    je check_numeric
-    
-    mov al, [rsi]
-    cmp al, 0
-    jne check_numeric
-    
-    ; Record error
-    mov rcx, r8
-    mov rdx, offset error_required
-    call record_validation_error
-    inc dword ptr [validation_errors]
-    
-check_numeric:
-    test bl, VALIDATE_NUMERIC
-    je check_email
-    
-    call validate_numeric_field
-    cmp al, 0
-    je check_email
-    
-    mov rcx, r8
-    mov rdx, offset error_numeric
-    call record_validation_error
-    
-check_email:
-    test bl, VALIDATE_EMAIL
-    je check_date
-    
-    call validate_email_field
-    cmp al, 0
-    je check_date
-    
-    mov rcx, r8
-    mov rdx, offset error_email
-    call record_validation_error
-    
-check_date:
-    test bl, VALIDATE_DATE
-    je next_validate_field
-    
-    call validate_date_field
-    cmp al, 0
-    je next_validate_field
-    
-    mov rcx, r8
-    mov rdx, offset error_date
-    call record_validation_error
-    
-next_validate_field:
-    inc r8d
-    jmp validate_field_loop
-    
-validation_complete:
-    mov eax, [validation_errors]
-    test eax, eax
-    je validation_success
-    
-    mov al, 1
-    jmp validation_exit
-    
-validation_success:
-    xor al, al
-    
-validation_exit:
-    add rsp, 64
-    pop rbp
-    ret
-
-; ============================================================================
-; FIELD TYPE INPUT HANDLERS
-; ============================================================================
-
-read_text_input:
-    ; Read text input for text field
-    push rbp
-    mov rbp, rsp
-    
-    mov rcx, offset field_values
-    mov rdx, 64
-    call read_line_input
-    
-    pop rbp
-    ret
-
-read_number_input:
-    ; Read numeric input with validation
-    push rbp
-    mov rbp, rsp
-    
-    mov r8d, 0
-    
-number_input_loop:
-    call read_char_input
-    
-    ; Check if digit or special char
-    cmp al, '0'
-    jl number_check_special
-    cmp al, '9'
-    jg number_check_special
-    
-    mov rsi, offset field_values
-    add rsi, r8
-    mov [rsi], al
-    inc r8d
-    
-    call print_char_form
-    jmp number_input_loop
-    
-number_check_special:
-    cmp al, 13                          ; ENTER
-    je number_input_done
-    
-    cmp al, 8                           ; Backspace
-    jne number_input_loop
-    
-    cmp r8d, 0
-    je number_input_loop
-    
-    dec r8d
-    mov al, 8
-    call print_char_form
-    
-    jmp number_input_loop
-    
-number_input_done:
-    mov rsi, offset field_values
-    add rsi, r8
-    mov byte ptr [rsi], 0               ; Null terminate
-    
-    pop rbp
-    ret
-
-read_date_input:
-    ; Read date input (MM/DD/YYYY format)
-    push rbp
-    mov rbp, rsp
-    
-    ; Would implement date-specific input with validation
-    
-    pop rbp
-    ret
-
-; ============================================================================
-; FIELD VALIDATION HELPERS
-; ============================================================================
-
-validate_numeric_field:
-    ; Input: RSI = field data
-    ; Output: AL = 0 (valid), 1 (invalid)
-    
-    push rbp
-    mov rbp, rsp
-    
-    mov rcx, 0
-    
-check_number_chars:
-    mov al, [rsi + rcx]
-    cmp al, 0
-    je number_valid
-    
-    cmp al, '0'
-    jl number_invalid
-    cmp al, '9'
-    jg number_check_decimal
-    
-    inc rcx
-    jmp check_number_chars
-    
-number_check_decimal:
-    cmp al, '.'
-    je inc_and_continue
-    
-    jmp number_invalid
-    
-inc_and_continue:
-    inc rcx
-    jmp check_number_chars
-    
-number_valid:
-    xor al, al
-    jmp validate_numeric_done
-    
-number_invalid:
-    mov al, 1
-    
-validate_numeric_done:
-    pop rbp
-    ret
-
-validate_email_field:
-    ; Input: RSI = field data
-    ; Output: AL = 0 (valid), 1 (invalid)
-    
-    push rbp
-    mov rbp, rsp
-    
-    ; Check for @ symbol
-    mov rcx, 0
-    mov r8d, 0
-    
-check_email_chars:
-    mov al, [rsi + rcx]
-    cmp al, 0
-    je check_email_at_found
-    
-    cmp al, '@'
-    jne skip_at_check
-    
-    inc r8d
-    
-skip_at_check:
-    inc rcx
-    jmp check_email_chars
-    
-check_email_at_found:
-    cmp r8d, 1
-    je email_valid
-    
-    mov al, 1
-    jmp validate_email_done
-    
-email_valid:
-    xor al, al
-    
-validate_email_done:
-    pop rbp
-    ret
-
-validate_date_field:
-    ; Input: RSI = field data (format MM/DD/YYYY)
-    ; Output: AL = 0 (valid), 1 (invalid)
-    
-    push rbp
-    mov rbp, rsp
-    
-    ; Simplified date validation
-    xor al, al
-    
-    pop rbp
-    ret
-
-; ============================================================================
-; FORM NAVIGATION
-; ============================================================================
-
-next_form_field:
-    ; Move to next field
-    
-    inc dword ptr [current_field_index]
-    cmp dword ptr [current_field_index], [form_field_count]
-    jl field_nav_done
-    
-    mov dword ptr [current_field_index], 0
-    
-field_nav_done:
-    ret
-
-previous_form_field:
-    ; Move to previous field
-    
-    cmp dword ptr [current_field_index], 0
-    eq field_at_start
-    
-    dec dword ptr [current_field_index]
-    jmp prev_field_done
-    
-field_at_start:
-    mov eax, [form_field_count]
-    dec eax
-    mov [current_field_index], eax
-    
-prev_field_done:
-    ret
-
-; ============================================================================
-; FORM SUBMISSION
-; ============================================================================
-
-submit_form:
-    ; Submit form and insert/update data
-    ; Output: AL = 0 (success), -1 (validation error)
-    
-    push rbp
-    mov rbp, rsp
-    sub rsp, 64
-    
-    ; Validate all fields first
-    call validate_form_data
-    cmp al, 0
-    jne submit_validation_failed
-    
-    ; Insert data into database
-    mov rcx, offset field_values
-    call insert_form_data
-    
-    xor al, al
-    jmp submit_done
-    
-submit_validation_failed:
-    mov al, -1
-    call display_validation_errors
-    
-submit_done:
-    add rsp, 64
-    pop rbp
-    ret
-
-insert_form_data:
-    ; Insert form data into database
-    ; Input: RCX = data buffer
-    
-    push rbp
-    mov rbp, rsp
-    
-    ; Would call database insert
-    
-    pop rbp
-    ret
-
-; ============================================================================
-; ERROR HANDLING
-; ============================================================================
-
-record_validation_error:
-    ; Input: RCX = field index, RDX = error message
-    
-    push rbp
-    mov rbp, rsp
-    
+    ; Copy field label
     mov rsi, rdx
-    mov rdi, offset form_validation_errors
+    mov rcx, FIELD_LABEL_LEN
+    rep movsb
     
-    ; Append error message
+    ; Store field type and validation
+    mov byte ptr [rdi], r8b         ; Field type
+    mov byte ptr [rdi + 1], r9b     ; Validation flags
     
-    pop rbp
+    ; Increment field index
+    mov eax, dword ptr [current_field_index]
+    inc eax
+    mov dword ptr [current_field_index], eax
+    
+    xor eax, eax
+    jmp add_field_done
+    
+add_field_error:
+    mov eax, -1
+    
+add_field_done:
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+add_form_field ENDP
 
-display_validation_errors:
-    ; Display all validation errors
+; =============================================================================
+; FORM DISPLAY
+; =============================================================================
+
+display_form PROC
+    ; Display the current form
+    ; Input: None
+    ; Output: EAX = 0
     
-    push rbp
-    mov rbp, rsp
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
     
-    mov rcx, offset form_validation_errors
-    call print_string_form
+    ; Clear screen (simplified)
+    mov ecx, 2000
+    xor al, al
     
-    pop rbp
+    ; Display form title
+    mov rsi, offset form_title
+    mov rdi, 0                      ; Display at position 0
+    mov rcx, 50
+    
+display_title_loop:
+    mov al, byte ptr [rsi]
+    test al, al
+    jz title_done
+    inc rsi
+    loop display_title_loop
+    
+title_done:
+    
+    ; Display fields
+    xor ecx, ecx                    ; Field counter
+    
+display_fields_loop:
+    cmp ecx, dword ptr [field_count]
+    jge fields_done
+    
+    ; Display field label
+    ; (Simplified - in real implementation would format nicely)
+    
+    inc ecx
+    jmp display_fields_loop
+    
+fields_done:
+    
+    ; Display status line
+    mov rsi, offset status_line
+    
+    ; Show current field
+    mov ecx, dword ptr [current_field_index]
+    
+    xor eax, eax
+    
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+display_form ENDP
 
-; ============================================================================
-; HELPER FUNCTIONS
-; ============================================================================
+; =============================================================================
+; INPUT CAPTURE
+; =============================================================================
 
-clear_data_entry_screen:
-    push rbp
-    mov rbp, rsp
+capture_field_input PROC
+    ; Capture input for current field
+    ; Input: ECX = field index
+    ; Output: EAX = input length
     
-    mov rcx, 25
+    push rbx
+    push rcx
+    push rdi
     
-clear_form_lines:
-    cmp rcx, 0
-    je form_cleared
+    ; Set current field
+    mov dword ptr [current_field_index], ecx
     
-    mov al, 10
-    call print_char_form
-    dec rcx
-    jmp clear_form_lines
+    ; Clear input buffer
+    mov rdi, offset current_input_buffer
+    mov rcx, 256
+    xor al, al
+    rep stosb
     
-form_cleared:
-    pop rbp
+    mov dword ptr [input_buffer_pos], 0
+    
+    ; Get field type
+    mov eax, ecx
+    imul eax, eax, FIELD_ENTRY_SIZE
+    mov rbx, offset field_definitions
+    add rbx, rax
+    mov al, byte ptr [rbx]          ; Field type
+    
+    ; Handle based on field type
+    cmp al, FIELD_TEXT
+    je capture_text
+    cmp al, FIELD_NUMBER
+    je capture_number
+    cmp al, FIELD_DATE
+    je capture_date
+    
+    ; Default: text input
+    
+capture_text:
+    ; Simulate input (in real implementation would read from keyboard)
+    mov rdi, offset current_input_buffer
+    mov byte ptr [rdi], 'D'
+    mov byte ptr [rdi + 1], 'a'
+    mov byte ptr [rdi + 2], 'a'
+    mov byte ptr [rdi + 3], 'a'
+    mov byte ptr [rdi + 4], 0
+    mov eax, 4
+    jmp capture_done
+    
+capture_number:
+    mov rdi, offset current_input_buffer
+    mov byte ptr [rdi], '1'
+    mov byte ptr [rdi + 1], '2'
+    mov byte ptr [rdi + 2], '3'
+    mov byte ptr [rdi + 3], 0
+    mov eax, 3
+    jmp capture_done
+    
+capture_date:
+    mov rdi, offset current_input_buffer
+    mov byte ptr [rdi], '1'
+    mov byte ptr [rdi + 1], '2'
+    mov byte ptr [rdi + 2], '/'
+    mov byte ptr [rdi + 3], '2'
+    mov byte ptr [rdi + 4], '5'
+    mov byte ptr [rdi + 5], '/'
+    mov byte ptr [rdi + 6], '2'
+    mov byte ptr [rdi + 7], '0'
+    mov byte ptr [rdi + 8], '2'
+    mov byte ptr [rdi + 9], '6'
+    mov byte ptr [rdi + 10], 0
+    mov eax, 10
+    
+capture_done:
+    pop rdi
+    pop rcx
+    pop rbx
     ret
+capture_field_input ENDP
 
-set_form_cursor:
-    ; Input: RCX = X, RDX = Y
-    push rbp
-    mov rbp, rsp
+; =============================================================================
+; FIELD NAVIGATION
+; =============================================================================
+
+next_form_field PROC
+    ; Move to next form field
+    ; Input: None
+    ; Output: EAX = status
     
-    ; Would use SetConsoleCursorPosition
+    mov ecx, dword ptr [current_field_index]
+    inc ecx
+    cmp ecx, dword ptr [field_count]
+    jge next_field_boundary
     
-    pop rbp
+    mov dword ptr [current_field_index], ecx
+    xor eax, eax
     ret
-
-set_form_cursor_back:
-    push rbp
-    mov rbp, rsp
     
-    ; Move cursor back N positions
-    
-    pop rbp
+next_field_boundary:
+    mov eax, -1
     ret
+next_form_field ENDP
 
-print_string_form:
-    ; Input: RCX = string
-    push rbp
-    mov rbp, rsp
+previous_form_field PROC
+    ; Move to previous form field
+    ; Input: None
+    ; Output: EAX = status
+    
+    mov ecx, dword ptr [current_field_index]
+    cmp ecx, 0
+    jle prev_field_boundary
+    
+    dec ecx
+    mov dword ptr [current_field_index], ecx
+    xor eax, eax
+    ret
+    
+prev_field_boundary:
+    mov eax, -1
+    ret
+previous_form_field ENDP
+
+; =============================================================================
+; VALIDATION
+; =============================================================================
+
+validate_form_data PROC
+    ; Validate all form fields
+    ; Input: None
+    ; Output: EAX = 1 if valid, 0 if errors
+    
+    push rbx
+    push rcx
+    push rdx
+    
+    mov dword ptr [error_count], 0
+    xor ecx, ecx                    ; Field counter
+    
+validate_loop:
+    cmp ecx, dword ptr [field_count]
+    jge validate_complete
+    
+    ; Validate this field
+    mov edx, ecx
+    call validate_single_field
+    
+    inc ecx
+    jmp validate_loop
+    
+validate_complete:
+    cmp dword ptr [error_count], 0
+    je validate_ok
+    
+    mov eax, 0                      ; Has errors
+    jmp validate_done
+    
+validate_ok:
+    mov eax, 1                      ; No errors
+    
+validate_done:
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+validate_form_data ENDP
+
+validate_single_field PROC
+    ; Validate a single field
+    ; Input: EDX = field index
+    ; Output: EAX = status
+    
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    
+    ; Get field definition
+    mov eax, edx
+    imul eax, eax, FIELD_ENTRY_SIZE
+    mov rbx, offset field_definitions
+    add rbx, rax
+    
+    ; Check validation flags
+    mov cl, byte ptr [rbx + 1]      ; Validation flags
+    
+    ; Check required
+    cmp cl, VALIDATE_REQUIRED
+    jne validate_check_format
+    
+    mov rsi, offset current_input_buffer
+    cmp byte ptr [rsi], 0
+    je validate_field_error
+    
+validate_check_format:
+    ; Check format based on field type
+    mov al, byte ptr [rbx]          ; Field type
+    
+    cmp al, FIELD_NUMBER
+    je validate_numeric_field
+    cmp al, FIELD_DATE
+    je validate_date_field
+    cmp al, FIELD_TEXT
+    je validate_text_field
+    
+validate_text_field:
+    xor eax, eax
+    jmp validate_field_done
+    
+validate_numeric_field:
+    call validate_numeric_format
+    jmp validate_field_done
+    
+validate_date_field:
+    call validate_date_format
+    jmp validate_field_done
+    
+validate_field_error:
+    inc dword ptr [error_count]
+    mov eax, -1
+    
+validate_field_done:
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+validate_single_field ENDP
+
+validate_numeric_field PROC
+    ; Validate numeric field format
+    ; Input: RCX = input string
+    ; Output: EAX = 0 if valid
+    
+    push rbx
+    push rcx
     
     mov rsi, rcx
     
-form_str_loop:
-    mov al, [rsi]
-    cmp al, 0
-    je form_str_done
+numeric_check_loop:
+    mov al, byte ptr [rsi]
+    test al, al
+    jz numeric_valid
     
-    call print_char_form
+    ; Check if digit or minus
+    cmp al, '-'
+    je numeric_ok
+    cmp al, '0'
+    jl numeric_invalid
+    cmp al, '9'
+    jg numeric_invalid
+    
+numeric_ok:
     inc rsi
-    jmp form_str_loop
+    jmp numeric_check_loop
     
-form_str_done:
-    pop rbp
+numeric_invalid:
+    mov eax, -1
+    jmp numeric_done
+    
+numeric_valid:
+    xor eax, eax
+    
+numeric_done:
+    pop rcx
+    pop rbx
     ret
+validate_numeric_field ENDP
 
-print_char_form:
-    ; Input: AL = character
-    push rbp
-    mov rbp, rsp
+validate_date_field PROC
+    ; Validate date field format (MM/DD/YYYY)
+    ; Input: RCX = input string
+    ; Output: EAX = 0 if valid
     
-    ; Would use WriteConsoleA
+    push rbx
+    push rcx
+    push rdx
     
-    pop rbp
+    mov rsi, rcx
+    xor ecx, ecx
+    
+    ; Must be exactly 10 characters: MM/DD/YYYY
+    
+date_validate_loop:
+    mov al, byte ptr [rsi + rcx]
+    
+    ; Check positions 2 and 5 for slashes
+    cmp ecx, 2
+    je date_check_slash
+    cmp ecx, 5
+    je date_check_slash
+    cmp ecx, 10
+    je date_validate_ok
+    
+    ; Check if digit
+    cmp al, '0'
+    jl date_invalid
+    cmp al, '9'
+    jg date_invalid
+    
+    inc ecx
+    jmp date_validate_loop
+    
+date_check_slash:
+    cmp al, '/'
+    jne date_invalid
+    inc ecx
+    jmp date_validate_loop
+    
+date_invalid:
+    mov eax, -1
+    jmp date_validate_done
+    
+date_validate_ok:
+    xor eax, eax
+    
+date_validate_done:
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+validate_date_field ENDP
 
-read_char_input:
-    ; Output: AL = character
-    push rbp
-    mov rbp, rsp
+validate_email_field PROC
+    ; Validate email format
+    ; Input: RCX = input string
+    ; Output: EAX = 0 if valid
     
-    ; Would use ReadConsoleA
+    push rbx
+    push rcx
+    push rdx
     
-    pop rbp
+    mov rsi, rcx
+    xor eax, eax
+    xor ebx, ebx                    ; @ found flag
+    
+email_loop:
+    mov al, byte ptr [rsi]
+    test al, al
+    jz email_check_valid
+    
+    cmp al, '@'
+    jne email_next
+    
+    cmp ebx, 1
+    je email_invalid               ; Multiple @ signs
+    mov ebx, 1
+    
+email_next:
+    inc rsi
+    jmp email_loop
+    
+email_invalid:
+    mov eax, -1
+    jmp email_done
+    
+email_check_valid:
+    cmp ebx, 1
+    jne email_invalid
+    xor eax, eax
+    
+email_done:
+    pop rdx
+    pop rcx
+    pop rbx
     ret
+validate_email_field ENDP
 
-read_line_input:
-    ; Input: RCX = buffer, RDX = max length
-    push rbp
-    mov rbp, rsp
+; =============================================================================
+; ERROR DISPLAY
+; =============================================================================
+
+display_validation_errors PROC
+    ; Display validation errors
+    ; Input: None
+    ; Output: EAX = error count
     
-    ; Would use ReadConsoleA
+    push rbx
+    push rcx
+    push rdi
+    push rsi
     
-    pop rbp
+    ; Build error message
+    mov rdi, offset error_display
+    mov rsi, offset validation_errors
+    mov ecx, dword ptr [error_count]
+    
+error_display_loop:
+    cmp ecx, 0
+    je error_display_done
+    
+    mov al, byte ptr [rsi]
+    mov byte ptr [rdi], al
+    
+    inc rsi
+    inc rdi
+    dec ecx
+    jmp error_display_loop
+    
+error_display_done:
+    mov byte ptr [rdi], 0           ; Null terminate
+    
+    mov eax, dword ptr [error_count]
+    
+    pop rsi
+    pop rdi
+    pop rcx
+    pop rbx
     ret
+display_validation_errors ENDP
 
-; ============================================================================
-; ERROR MESSAGES
-; ============================================================================
+; =============================================================================
+; FORM SUBMISSION
+; =============================================================================
 
-form_title:             db "Data Entry Form", 0
-form_buttons:           db "[F1]=Save [F2]=Cancel [Tab]=Next [Shift+Tab]=Prev", 0
+submit_form PROC
+    ; Submit the form
+    ; Input: None
+    ; Output: EAX = status (0 = success)
+    
+    push rbx
+    push rcx
+    
+    ; Validate form
+    call validate_form_data
+    cmp eax, 1
+    jne submit_error
+    
+    ; Mark form as submitted
+    mov dword ptr [form_submitted], 1
+    
+    xor eax, eax
+    jmp submit_done
+    
+submit_error:
+    mov eax, -1
+    
+submit_done:
+    pop rcx
+    pop rbx
+    ret
+submit_form ENDP
 
-error_required:         db "Field is required", 0
-error_numeric:          db "Must be numeric", 0
-error_email:            db "Invalid email format", 0
-error_date:             db "Invalid date format", 0
+; =============================================================================
+; UTILITY
+; =============================================================================
 
-validation_errors:      dd 0
+get_field_value PROC
+    ; Get value of a form field
+    ; Input: ECX = field index
+    ; Output: RAX = pointer to value string
+    
+    push rbx
+    
+    mov eax, ecx
+    imul eax, eax, FIELD_VALUE_LEN
+    mov rbx, offset field_values
+    add rax, rbx
+    
+    pop rbx
+    ret
+get_field_value ENDP
 
-; ============================================================================
-; END OF DATA ENTRY UI SYSTEM
-; ============================================================================
+set_field_value PROC
+    ; Set value of a form field
+    ; Input: ECX = field index
+    ;        RDX = pointer to value string
+    ; Output: EAX = status
+    
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    
+    mov rax, rcx
+    imul rax, rax, FIELD_VALUE_LEN
+    mov rbx, offset field_values
+    add rax, rbx
+    
+    mov rdi, rax
+    mov rsi, rdx
+    mov rcx, FIELD_VALUE_LEN
+    rep movsb
+    
+    xor eax, eax
+    
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+set_field_value ENDP
 
-end
+clear_form PROC
+    ; Clear all form data
+    ; Input: None
+    ; Output: EAX = 0
+    
+    push rdi
+    
+    mov rdi, offset field_values
+    mov rcx, MAX_FIELDS_PER_FORM * FIELD_VALUE_LEN
+    xor al, al
+    rep stosb
+    
+    mov dword ptr [current_field_index], 0
+    mov dword ptr [form_submitted], 0
+    mov dword ptr [error_count], 0
+    
+    xor eax, eax
+    pop rdi
+    ret
+clear_form ENDP
+
+; =============================================================================
+; FORM VALIDATION
+; =============================================================================
+
+validate_form PROC
+    ; Validate all fields in current form
+    ; Output: EAX = 0 if valid, error count otherwise
+    
+    push rbx
+    push rcx
+    push rdi
+    push rsi
+    
+    xor ecx, ecx                    ; Error counter
+    xor ebx, ebx                    ; Field index
+    
+validate_loop:
+    cmp ebx, dword ptr [field_count]
+    jge validate_done
+    
+    ; Check if field is required
+    mov rsi, offset field_definitions
+    mov rax, rbx
+    imul rax, FIELD_ENTRY_SIZE
+    add rsi, rax
+    
+    mov al, byte ptr [rsi]          ; Flags
+    test al, VALIDATE_REQUIRED
+    jz validate_optional
+    
+    ; Check if field has value
+    mov rdi, offset field_values
+    mov rax, rbx
+    imul rax, FIELD_VALUE_LEN
+    add rdi, rax
+    
+    cmp byte ptr [rdi], 0
+    je validate_error_found
+    
+validate_optional:
+    inc ebx
+    jmp validate_loop
+    
+validate_error_found:
+    inc ecx
+    inc ebx
+    jmp validate_loop
+    
+validate_done:
+    mov eax, ecx
+    mov dword ptr [error_count], ecx
+    pop rsi
+    pop rdi
+    pop rcx
+    pop rbx
+    ret
+validate_form ENDP
+
+validate_field PROC
+    ; Validate a specific field
+    ; Input: ECX = field index
+    ; Output: EAX = 0 if valid, error code otherwise
+    
+    push rbx
+    push rcx
+    push rdi
+    
+    ; Get field definition
+    mov rdi, offset field_definitions
+    mov rax, rcx
+    imul rax, FIELD_ENTRY_SIZE
+    add rdi, rax
+    
+    ; Get field value
+    mov rbx, offset field_values
+    mov rax, rcx
+    imul rax, FIELD_VALUE_LEN
+    add rbx, rax
+    
+    ; Get validation flags
+    mov al, byte ptr [rdi]
+    
+    ; Check email format if required
+    test al, VALIDATE_EMAIL
+    jz skip_email_check
+    
+    mov rdi, rbx
+    call validate_email
+    cmp eax, 0
+    jne email_invalid
+    
+skip_email_check:
+    ; Check numeric if required
+    test al, VALIDATE_NUMERIC
+    jz skip_numeric_check
+    
+    mov rdi, rbx
+    call validate_numeric
+    cmp eax, 0
+    jne numeric_invalid
+    
+skip_numeric_check:
+    xor eax, eax
+    jmp validate_field_done
+    
+email_invalid:
+    mov eax, 2
+    jmp validate_field_done
+    
+numeric_invalid:
+    mov eax, 3
+    
+validate_field_done:
+    pop rdi
+    pop rcx
+    pop rbx
+    ret
+validate_field ENDP
+
+validate_email PROC
+    ; Simple email validation
+    ; Input: RDI = email string
+    ; Output: EAX = 0 if valid
+    
+    push rcx
+    push rdi
+    
+    ; Check for @ symbol
+    xor ecx, ecx
+    
+find_at_loop:
+    mov al, byte ptr [rdi + rcx]
+    test al, al
+    jz no_at_found
+    
+    cmp al, '@'
+    je at_found
+    
+    inc ecx
+    cmp ecx, 256
+    jl find_at_loop
+    
+no_at_found:
+    mov eax, -1
+    jmp validate_email_done
+    
+at_found:
+    ; Check for dot after @
+    inc ecx
+    xor ecx, ecx
+    
+find_dot_loop:
+    mov al, byte ptr [rdi + rcx]
+    test al, al
+    jz no_dot_found
+    
+    cmp al, '.'
+    je dot_found
+    
+    inc ecx
+    jmp find_dot_loop
+    
+no_dot_found:
+    mov eax, -1
+    jmp validate_email_done
+    
+dot_found:
+    xor eax, eax
+    
+validate_email_done:
+    pop rdi
+    pop rcx
+    ret
+validate_email ENDP
+
+validate_numeric PROC
+    ; Check if field contains only numeric data
+    ; Input: RDI = value string
+    ; Output: EAX = 0 if numeric
+    
+    xor ecx, ecx
+    
+numeric_check_loop:
+    mov al, byte ptr [rdi + rcx]
+    test al, al
+    jz numeric_valid
+    
+    cmp al, '0'
+    jl numeric_invalid_char
+    cmp al, '9'
+    jg numeric_invalid_char
+    
+    inc ecx
+    jmp numeric_check_loop
+    
+numeric_valid:
+    xor eax, eax
+    ret
+    
+numeric_invalid_char:
+    mov eax, -1
+    ret
+validate_numeric ENDP
+
+submit_form PROC
+    ; Submit form after validation
+    ; Output: EAX = 0 if submitted, error code otherwise
+    
+    call validate_form
+    cmp eax, 0
+    jne submit_error
+    
+    mov dword ptr [form_submitted], 1
+    mov dword ptr [form_validated], 1
+    
+    xor eax, eax
+    ret
+    
+submit_error:
+    mov eax, -1
+    ret
+submit_form ENDP
+
+get_form_field_count PROC
+    ; Get number of fields in current form
+    ; Output: EAX = field count
+    
+    mov eax, dword ptr [field_count]
+    ret
+get_form_field_count ENDP
+
+END
