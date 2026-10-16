@@ -14,15 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build and run C tests
+      - name: Build and run Make tests
         working-directory: v2026
         run: |
           make clean
-          make
-          ./build/altair2026
-          cc -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude tests/test_platform.c src/platform.c -o build/test_platform
-          ./build/test_platform
-      - name: CMake build
+          make test
+      - name: CMake build and tests
         run: |
           cmake -S v2026 -B v2026/cmake-build
           cmake --build v2026/cmake-build
