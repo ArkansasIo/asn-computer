@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ALTAIR 8800 — 2026</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="console">
+    <header>
+      <h1>ALTAIR 8800 / 2026</h1>
+      <span>64-BIT COMMAND PANEL</span>
+    </header>
+    <section class="status">
+      <div><b>CPU</b><span id="cpu">64-BIT</span></div>
+      <div><b>DISPLAY</b><span>3840×2160</span></div>
+      <div><b>MEMORY</b><span>DDR5</span></div>
+      <div><b>STORAGE</b><span>NVMe</span></div>
+    </section>
+    <section class="panel">
+      <div class="bank"><h2>ADDRESS</h2><div id="address" class="leds"></div></div>
+      <div class="bank"><h2>DATA</h2><div id="data" class="leds data"></div></div>
+      <div class="switches"><h2>FRONT PANEL</h2><div id="switches"></div></div>
+    </section>
+    <section class="controls">
+      <button id="reset">RESET</button>
+      <button id="run">RUN</button>
+      <button id="step">STEP</button>
+      <button id="halt">HALT</button>
+    </section>
+    <section class="screen">
+      <canvas id="display" width="3840" height="2160"></canvas>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
