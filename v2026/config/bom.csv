@@ -1,0 +1,19 @@
+Board,Reference,Function,Technology,Quantity,Status
+ALT-MB-2026,U1,64-bit SoC,Modern x86-64 embedded BGA,1,Select exact OPN
+ALT-MB-2026,U2-U3,DDR5 ECC memory,DDR5-5600 class,2,Select topology
+ALT-MB-2026,U4,Boot flash,SPI NOR,1,Select capacity
+ALT-MB-2026,U5,Security,TPM 2.0 class,1,Select vendor
+ALT-MB-2026,J1,NVMe,M.2 PCIe Gen4 x4,1,Production candidate
+ALT-MB-2026,J2-J3,USB4,USB-C,2,Production candidate
+ALT-MB-2026,J4-J5,USB 3.x,USB,2,Production candidate
+ALT-MB-2026,J6,HDMI,HDMI 2.1 class,1,Production candidate
+ALT-MB-2026,J7,DisplayPort,DP 2.0 class,1,Production candidate
+ALT-MB-2026,J8,eDP,Internal 4K display,1,Panel dependent
+ALT-MB-2026,J9,PCIe expansion,Gen4,1,Optional GPU
+ALT-FP-2026,SW1-SW16,Front panel switches,Toggle,16,Production candidate
+ALT-FP-2026,LED1-LED24,Address/data/status LEDs,LED,24,Production candidate
+ALT-BP-2026,J1-J10,S-100-compatible slots,Edge connector,10,Prototype
+ALT-DISP-4K,P1,4K panel,3840x2160,1,Panel dependent
+ALT-PWR-2026,U20,CPU VRM,Multiphase,1,Platform dependent
+ALT-PWR-2026,U21,5V regulator,DC/DC,1,Platform dependent
+ALT-PWR-2026,U22,3.3V regulator,DC/DC,1,Platform dependent
