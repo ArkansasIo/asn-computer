@@ -1,7 +1,6 @@
 bits 64
 
 global memory_barrier
-
 global memory_zero
 
 section .text
@@ -11,9 +10,7 @@ memory_barrier:
 
 ; RDI = address, RSI = byte count. Caller owns the buffer.
 memory_zero:
-    xor eax, eax
     mov rcx, rsi
-    mov rsi, rdi
-    mov rdi, rsi
+    xor eax, eax
     rep stosb
     ret
