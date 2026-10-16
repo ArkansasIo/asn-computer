@@ -1,38 +1,26 @@
-# 2026 Test Plan
+# Test Plan
 
-## Software
+## Hosted C layer
+- Reset initializes a deterministic state.
+- Tick advances counters and exposes front-panel state.
+- Null state pointers are tolerated by public functions.
+- The 4K framebuffer byte count is 33,177,600.
+- Self-test validates the documented platform constants.
 
-- CPUID/CPU startup
-- 64-bit arithmetic
-- memory model
-- 8080 compatibility
-- front-panel state
-- 4K display mode
-- reset/run/step/halt behavior
+## Python reference model
+- Self-test verifies NOP/HALT progression and 4K target.
+- Front-panel address output remains within 16 bits.
+- HALT stops CPU instruction advancement.
 
-## Hardware bring-up
+## Continuous integration
+GitHub Actions should build and run C unit tests, run the Python reference suite, and verify
+the CMake build completes.
 
-1. Inspect PCB
-2. Validate power rails with SoC absent where possible
-3. Verify clock/reset
-4. Verify SPI boot flash
-5. Bring up CPU firmware
-6. Train and test DDR5
-7. Enumerate PCIe
-8. Detect NVMe
-9. Test USB
-10. Test 10GbE
-11. Test eDP/HDMI/DP at 4K
-12. Test S-100 bridge
-13. Test front panel
-14. Thermal soak
-15. Long-duration memory/storage test
-
-## Release gates
-
-- ERC clean
-- DRC clean
-- SI/PI review complete
-- thermal review complete
-- firmware recovery path tested
-- documented known issues
+## Hardware validation (not yet implemented)
+- SoC power sequencing and reset timing
+- DDR initialization/training
+- PCIe/NVMe enumeration
+- USB/network links
+- display link training and 4K scanout
+- thermal and power-integrity tests
+- S-100 bridge timing and voltage-level compliance
