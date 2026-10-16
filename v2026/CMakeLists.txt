@@ -5,16 +5,16 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-add_executable(altair2026
-    src/main.c
-    src/platform.c
-)
+add_executable(altair2026 src/main.c src/platform.c)
 target_include_directories(altair2026 PRIVATE include)
 if(MSVC)
-    target_compile_options(altair2026 PRIVATE /W4)
+  target_compile_options(altair2026 PRIVATE /W4)
 else()
-    target_compile_options(altair2026 PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(altair2026 PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 enable_testing()
+add_executable(test_platform tests/test_platform.c src/platform.c)
+target_include_directories(test_platform PRIVATE include)
+add_test(NAME platform_unit_tests COMMAND test_platform)
 add_test(NAME hosted_smoke COMMAND altair2026)
