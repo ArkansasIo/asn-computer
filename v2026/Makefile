@@ -1,27 +1,24 @@
-NASM ?= nasm
 CC ?= cc
-CFLAGS ?= -std=c11 -O2 -Wall -Wextra -Wpedantic
-LDFLAGS ?=
+CFLAGS ?= -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror
+BUILD := build
+SOURCES := src/main.c src/platform.c
+OBJECTS := $(SOURCES:src/%.c=$(BUILD)/%.o)
 
-BUILD=build
-ASMOBJ=$(BUILD)/boot64.o $(BUILD)/cpu.o $(BUILD)/memory.o $(BUILD)/io.o $(BUILD)/display.o $(BUILD)/frontpanel.o
-COBJ=$(BUILD)/main.o $(BUILD)/platform.o
-
+.PHONY: all test clean
 all: $(BUILD)/altair2026
 
 $(BUILD):
 	mkdir -p $(BUILD)
 
-$(BUILD)/%.o: asm/%.asm | $(BUILD)
-	$(NASM) -f elf64 $< -o $@
-
-$(BUILD)/%.o: src/%.c | $(BUILD)
+$(BUILD)/%.o: src/%.c include/platform.h | $(BUILD)
 	$(CC) $(CFLAGS) -Iinclude -c $< -o $@
 
-$(BUILD)/altair2026: $(ASMOBJ) $(COBJ)
-	$(CC) $(LDFLAGS) $^ -o $@
+$(BUILD)/altair2026: $(OBJECTS)
+	$(CC) $(CFLAGS) $(OBJECTS) -o $@
+
+test: $(BUILD)/altair2026
+	./$(BUILD)/altair2026
+	python3 -m unittest discover -s tests -p 'test_*.py'
 
 clean:
 	rm -rf $(BUILD)
-
-.PHONY: all clean
