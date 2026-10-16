@@ -1,0 +1,14 @@
+NetClass,ImpedanceTarget,Use
+PCIe_GEN4,85ohm differential,PCIe lanes
+USB4,90ohm differential,USB4 lanes
+HDMI,100ohm differential,HDMI 2.1
+DisplayPort,100ohm differential,DP 2.0
+eDP,100ohm differential,eDP 1.4
+10GbE,100ohm differential,Ethernet
+DDR5,Vendor-defined,DDR5 byte lanes/address/control
+S100,Legacy bus,Legacy expansion
+I2C,Open-drain,Management
+SPI,Single-ended,Flash/peripherals
+UART,Single-ended,Console
+GPIO,Single-ended,General I/O
+POWER,Low impedance,Power planes/traces
