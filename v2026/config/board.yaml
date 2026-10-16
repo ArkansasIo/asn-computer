@@ -1,0 +1,27 @@
+board:
+  name: ALTAIR-8800-2026
+  revision: A0
+  architecture: x86-64
+  cpu_class: modern_64_bit_soc
+  memory: DDR5-5600 ECC-class
+  storage: NVMe PCIe Gen4 x4
+  expansion: PCIe Gen4 + S-100-compatible bridge
+  display: 3840x2160
+  network: 10GbE-class
+  usb: USB4/USB3/USB2
+  security: TPM-2.0-class
+
+front_panel:
+  address_leds: 16
+  data_leds: 8
+  switches: 16
+
+legacy:
+  cpu_model: Intel-8080-compatible reference emulator
+  bus: S-100-compatible abstraction
+  slots: 10
+
+notes:
+  - Exact SoC OPN and BGA map must be frozen before PCB release.
+  - Exact DDR5 topology must follow the selected SoC reference design.
+  - Vendor firmware and power sequencing are platform-specific.
