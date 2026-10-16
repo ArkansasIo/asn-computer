@@ -17,7 +17,7 @@ int main(void) {
     assert(state.data == 0);
 
     assert(altair_framebuffer_bytes() == UINT64_C(33177600));
-    altair_tick(NULL, 100); /* Null pointers are safely ignored. */
+    altair_tick(NULL, 100);
     altair_reset(NULL);
     puts("platform tests: PASS");
     return 0;
