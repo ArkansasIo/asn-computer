@@ -21,9 +21,12 @@ class CPU8080Tests(unittest.TestCase):
         self.assertTrue(cpu.halted)
 
     def test_subtract_and_zero_jump(self):
+        # MVI A,5; SUI 5; JZ 0008; HLT; HLT.
+        # The jump target is the second HLT and should execute.
         cpu = run([0x3E,5,0xD6,5,0xCA,8,0,0x76,0x76])
         self.assertEqual(cpu.a, 0)
         self.assertTrue(cpu.halted)
+        self.assertEqual(cpu.pc, 9)
 
     def test_stack_push_pop(self):
         cpu = run([0x01,0x34,0x12,0xC5,0x01,0x00,0x00,0xC1,0x76])
