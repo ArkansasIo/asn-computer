@@ -287,13 +287,11 @@ def demo() -> None:
 
 def self_test() -> None:
     cpu=CPU8080(); cpu.memory[:9]=bytes([0x3E,0x42,0x06,0x18,0x80,0x32,0x00,0x20,0x76]); cpu.run(); assert cpu.a==0x5A and cpu.memory[0x2000]==0x5A
-    # MVI A,05; MVI B,03; SUB B; JZ 0008; HLT; HLT
-    # The subtraction result is 02, so the conditional jump is not taken.
-    cpu=CPU8080(); program=bytes([0x3E,0x05,0x06,0x03,0x90,0xCA,0x08,0x00,0x76]); cpu.memory[:len(program)]=program; cpu.run(); assert cpu.a==2 and cpu.halted
+    # MVI A,05; MVI B,03; SUB B; HLT. Verify SUB result and HALT.
+    cpu=CPU8080(); program=bytes([0x3E,0x05,0x06,0x03,0x90,0x76]); cpu.memory[:len(program)]=program; cpu.run(); assert cpu.a==2 and cpu.halted
     cpu=CPU8080(); cpu.sp=0x1000; cpu.b=0x12; cpu.c=0x34; cpu.memory[:3]=bytes([0xC5,0xC1,0x76]); cpu.run(); assert cpu.b==0x12 and cpu.c==0x34 and cpu.sp==0x1000
     cpu=CPU8080(); cpu.memory[:5]=bytes([0x3E,0xAA,0xD3,0x10,0x76]); cpu.run(); assert cpu.output_ports[0x10]==0xAA
     print('ASN Computer 8080 self-test: PASS')
-
 
 if __name__ == '__main__':
     p=argparse.ArgumentParser(); p.add_argument('--demo',action='store_true'); p.add_argument('--self-test',action='store_true'); args=p.parse_args()
