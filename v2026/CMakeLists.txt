@@ -1,26 +1,20 @@
 cmake_minimum_required(VERSION 3.20)
-project(altair2026 LANGUAGES C ASM_NASM)
+project(altair2026 VERSION 0.2.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_ASM_NASM_OBJECT_FORMAT elf64)
-
-include_directories(include)
+set(CMAKE_C_EXTENSIONS OFF)
 
 add_executable(altair2026
     src/main.c
     src/platform.c
-    asm/boot64.asm
-    asm/cpu.asm
-    asm/memory.asm
-    asm/io.asm
-    asm/display.asm
-    asm/frontpanel.asm
-    asm/compat8080.asm
 )
+target_include_directories(altair2026 PRIVATE include)
+if(MSVC)
+    target_compile_options(altair2026 PRIVATE /W4)
+else()
+    target_compile_options(altair2026 PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
-set_source_files_properties(
-    asm/boot64.asm asm/cpu.asm asm/memory.asm asm/io.asm
-    asm/display.asm asm/frontpanel.asm asm/compat8080.asm
-    PROPERTIES LANGUAGE ASM_NASM
-)
+enable_testing()
+add_test(NAME hosted_smoke COMMAND altair2026)
