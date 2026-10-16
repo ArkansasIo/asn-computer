@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-command -v nasm >/dev/null || { echo 'NASM is required'; exit 1; }
-command -v cc >/dev/null || { echo 'C compiler is required'; exit 1; }
-
+cd "$(dirname "$0")"
+command -v make >/dev/null || { echo "make is required" >&2; exit 1; }
+command -v cc >/dev/null || { echo "A C compiler (cc) is required" >&2; exit 1; }
 make clean
-make
-./build/altair2026
+make test
