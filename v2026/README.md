@@ -2,7 +2,7 @@
 
 A modernized software and hardware-design study combining an Altair-inspired front panel and legacy compatibility model with a proposed 64-bit x86-64 computer architecture.
 
-> **Current status:** the portable C target is a hosted reference simulator. This repository does not yet contain a complete x86-64 operating system, production BIOS/UEFI firmware, validated motherboard schematic, or bootable installer.
+> **Current status:** The portable C target is a hosted reference simulator, not a modern x86-64 operating system, production BIOS/UEFI firmware, validated motherboard design, or bootable installer.
 
 ## Goals
 - x86-64 software/platform architecture planning
@@ -19,22 +19,18 @@ Requirements: C11 compiler and Make. Python 3.10+ for reference-model tests.
 ```sh
 cd v2026
 make clean
-make
-./build/altair2026
-cc -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude tests/test_platform.c src/platform.c -o build/test_platform
-./build/test_platform
-python3 -m unittest discover -s tests -p 'test_*.py'
+make test
 ```
 
 CMake is also supported:
 
 ```sh
-cmake -S . -B cmake-build
-cmake --build cmake-build
-ctest --test-dir cmake-build --output-on-failure
+cmake -S v2026 -B v2026/cmake-build
+cmake --build v2026/cmake-build
+ctest --test-dir v2026/cmake-build --output-on-failure
 ```
 
 See [Hosted Build Guide](docs/HOSTED_BUILD.md), [Architecture](docs/ARCHITECTURE.md), [Hardware](docs/HARDWARE.md), and [Firmware](docs/FIRMWARE.md).
 
 ## Hardware caution
-The board YAML and BOM are planning artifacts, not manufacturing outputs. Before fabrication, freeze the exact processor/SoC part number, package footprint, power rails, memory topology, high-speed routing, connector pinouts, thermal design, and vendor firmware. Complete ERC/DRC, signal-integrity and power-integrity review before ordering PCBs.
+The board YAML and BOM are planning artifacts, not manufacturing outputs. Before fabrication, freeze the exact processor/SoC part number, package footprint, power rails, memory topology, high-speed routing, connector pinouts, thermal design, and vendor firmware. Complete ERC/DRC, signal-integrity and power-integrity reviews before ordering PCBs.
