@@ -1,60 +1,40 @@
-# ALTAIR 8800 — 2026 64-bit Edition
+# ALTAIR 8800 — 2026 Reference Platform
 
-A clean 2026 architecture layer for the existing Altair 8800 project.
+A modernized software and hardware-design study combining an Altair-inspired front panel and legacy compatibility model with a proposed 64-bit x86-64 computer architecture.
+
+> **Current status:** the portable C target is a hosted reference simulator. This repository does not yet contain a complete x86-64 operating system, production BIOS/UEFI firmware, validated motherboard schematic, or bootable installer.
 
 ## Goals
+- x86-64 software/platform architecture planning
+- portable C reference runtime and Python legacy model
+- 3840 × 2160 display target and framebuffer sizing
+- Altair-inspired front panel with 16 address controls and 8 data indicators
+- Intel 8080 compatibility experimentation
+- S-100-compatible expansion through a future isolated bridge
+- documented hardware, firmware, PCB and testing process
 
-- x86-64 / long-mode software architecture
-- modern memory/storage/I/O model
-- 4K 3840×2160 display target
-- Altair front-panel compatibility
-- Intel 8080-compatible legacy CPU model
-- S-100-compatible expansion abstraction
-- hardware/firmware documentation
-- hosted Linux/Windows development path
-- browser front-panel UI
+## Build and test
+Requirements: C11 compiler and Make. Python 3.10+ for reference-model tests.
 
-## Platform model
-
-The reference hardware profile uses a contemporary 64-bit SoC class with DDR5, PCIe Gen4,
-NVMe, USB4/USB, 10GbE, TPM/security, and HDMI/DP/eDP display paths. Exact production
-BGA pinouts, DDR training, VRM sequencing, and vendor firmware are intentionally not
-invented here; they must come from the selected silicon vendor's design package.
-
-## Source tree
-
-- `asm/` — x86-64 assembly modules
-- `include/` — ABI and hardware definitions
-- `src/` — hosted emulator/runtime support
-- `python/` — reference emulator and tooling
-- `web/` — 4K-capable browser front panel
-- `rtl/` — S-100/front-panel FPGA reference RTL
-- `config/` — board, memory, PCIe, display and BOM configuration
-- `docs/` — engineering documentation
-- `tests/` — software tests
-- `.github/workflows/` — CI
-
-## Build
-
-Linux:
-
-```bash
+```sh
 cd v2026
-./build.sh
+make clean
+make
 ./build/altair2026
+cc -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude tests/test_platform.c src/platform.c -o build/test_platform
+./build/test_platform
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Windows PowerShell:
+CMake is also supported:
 
-```powershell
-cd v2026
-./build.ps1
+```sh
+cmake -S . -B cmake-build
+cmake --build cmake-build
+ctest --test-dir cmake-build --output-on-failure
 ```
 
-Python reference emulator:
+See [Hosted Build Guide](docs/HOSTED_BUILD.md), [Architecture](docs/ARCHITECTURE.md), [Hardware](docs/HARDWARE.md), and [Firmware](docs/FIRMWARE.md).
 
-```bash
-python3 python/altair2026.py --self-test
-```
-
-Browser UI: open `web/index.html` in a browser or serve `v2026/web` with a static server.
+## Hardware caution
+The board YAML and BOM are planning artifacts, not manufacturing outputs. Before fabrication, freeze the exact processor/SoC part number, package footprint, power rails, memory topology, high-speed routing, connector pinouts, thermal design, and vendor firmware. Complete ERC/DRC, signal-integrity and power-integrity review before ordering PCBs.
