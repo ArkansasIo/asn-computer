@@ -21,10 +21,8 @@ POSIX shell:
 
 ```bash
 chmod +x build.sh
-a./build.sh
+./build.sh
 ```
-
-If the leading `a` was accidentally copied, use `./build.sh`.
 
 The portable build compiles all Python sources, runs the 8080 CPU self-test, and executes the regression suite without third-party packages.
 
