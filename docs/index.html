@@ -11,37 +11,22 @@
   <div class="grid-bg"></div>
   <header class="topbar">
     <a class="brand" href="#top">ASN<span>_</span>COMPUTER</a>
-    <nav>
-      <a href="#platform">Platform</a>
-      <a href="#console">Console</a>
-      <a href="#architecture">Architecture</a>
-      <a href="#build">Build</a>
-      <a href="https://github.com/ArkansasIo/asn-computer" target="_blank" rel="noreferrer">GitHub ↗</a>
-    </nav>
+    <nav><a href="#platform">Platform</a><a href="#console">Console</a><a href="#architecture">Architecture</a><a href="#build">Build</a><a href="https://github.com/ArkansasIo/asn-computer" target="_blank" rel="noreferrer">GitHub ↗</a></nav>
   </header>
-
   <main id="top">
     <section class="hero">
       <div class="eyebrow">ALTAIR 8800 / 2026 · OPEN COMPUTER RESEARCH</div>
       <h1>From the <span>front panel</span><br>to a 64-bit platform.</h1>
       <p class="lead">ASN Computer is a software, firmware and hardware-design project that recreates the character of the Altair era while developing a modern, documented 64-bit computer platform.</p>
-      <div class="actions">
-        <a class="button primary" href="#console">Launch console</a>
-        <a class="button" href="https://github.com/ArkansasIo/asn-computer" target="_blank" rel="noreferrer">View source</a>
-      </div>
-      <div class="metrics">
-        <div><strong>64</strong><small>BIT TARGET</small></div>
-        <div><strong>4K</strong><small>DISPLAY TARGET</small></div>
-        <div><strong>8080</strong><small>LEGACY MODEL</small></div>
-        <div><strong>C11</strong><small>HOSTED CORE</small></div>
-      </div>
+      <div class="actions"><a class="button primary" href="#console">Launch console</a><a class="button" href="https://github.com/ArkansasIo/asn-computer" target="_blank" rel="noreferrer">View source</a></div>
+      <div class="metrics"><div><strong>64</strong><small>BIT TARGET</small></div><div><strong>64K</strong><small>REFERENCE RAM</small></div><div><strong>8080</strong><small>LEGACY MODEL</small></div><div><strong>4K</strong><small>DISPLAY TARGET</small></div></div>
     </section>
 
     <section id="platform" class="section">
       <div class="section-head"><span>01</span><h2>Platform status</h2></div>
       <div class="cards">
         <article><b>HOSTED REFERENCE</b><h3>Portable C runtime</h3><p>Build and test the ALTAIR 2026 reference layer on a normal development machine using Make or CMake.</p><code>make test</code></article>
-        <article><b>LEGACY COMPATIBILITY</b><h3>8080 research model</h3><p>Front-panel behavior, registers, switches, LEDs and selected Intel 8080 instructions are represented for experimentation.</p><code>python3 tools/altair8080.py</code></article>
+        <article><b>FRONT PANEL</b><h3>Switches + indicators</h3><p>Use address/data controls, memory examine/deposit operations, single-step execution, RUN/HALT and live bus LEDs.</p><code>LOAD · EXAMINE · DEPOSIT</code></article>
         <article><b>HARDWARE RESEARCH</b><h3>Modern expansion path</h3><p>Architecture, firmware, PCB, display, memory and peripheral plans are documented as engineering study artifacts.</p><code>v2026/docs/</code></article>
       </div>
     </section>
@@ -55,51 +40,50 @@
           <div><label>ADDRESS BUS</label><strong id="address">0000</strong></div>
           <div><label>DATA BUS</label><strong id="data">00</strong></div>
           <div><label>STATUS</label><strong id="status">READY</strong></div>
+          <div><label>ACCUMULATOR</label><strong id="acc">00</strong></div>
+          <div><label>MEMORY</label><strong id="memoryInfo">0000: 00</strong></div>
+          <div><label>FLAGS</label><strong id="flags">-----</strong></div>
+          <div><label>CYCLES</label><strong id="cycles">00000000</strong></div>
         </div>
+
         <div class="panel-grid">
-          <div class="panel-block"><h3>ADDRESS BUS · A15—A0</h3><div id="addressLeds" class="leds"></div></div>
-          <div class="panel-block"><h3>DATA BUS · D7—D0</h3><div id="dataLeds" class="leds eight"></div></div>
-          <div class="panel-block switches"><h3>TOGGLE SWITCHES</h3><div id="switches" class="switchgrid"></div></div>
+          <div class="panel-block"><h3>ADDRESS BUS · A15—A0 · LED INDICATORS</h3><div id="addressLeds" class="leds"></div><div id="addressLabels" class="bitlabels"></div></div>
+          <div class="panel-block"><h3>DATA BUS · D7—D0 · LED INDICATORS</h3><div id="dataLeds" class="leds eight"></div><div id="dataLabels" class="bitlabels"></div></div>
+          <div class="panel-block switches"><h3>ADDRESS / DATA TOGGLE SWITCHES</h3><p class="panel-help">Click a switch to set its bit. In ADDRESS mode the switches select A15—A0; in DATA mode they select D7—D0.</p><div class="mode-buttons"><button id="addressMode" class="mode active">ADDRESS</button><button id="dataMode" class="mode">DATA</button></div><div id="switches" class="switchgrid"></div></div>
         </div>
-        <div class="controls"><button data-action="reset">RESET</button><button data-action="run">RUN</button><button data-action="step">STEP</button><button data-action="halt">HALT</button></div>
-        <div class="terminal"><div class="terminal-bar">ASN MONITOR <span>LOCAL REFERENCE UI</span></div><pre id="terminal">BOOT ROM ................. OK
-MEMORY MAP ............... OK
+
+        <div class="controls primary-controls">
+          <button data-action="reset">RESET</button><button data-action="load">LOAD ADDRESS</button><button data-action="examine">EXAMINE</button><button data-action="deposit">DEPOSIT</button><button data-action="examineNext">EXAMINE NEXT</button><button data-action="depositNext">DEPOSIT NEXT</button>
+        </div>
+        <div class="controls run-controls"><button data-action="run">RUN</button><button data-action="step">SINGLE STEP</button><button data-action="halt">HALT</button><button data-action="clear">CLEAR TERMINAL</button></div>
+
+        <div class="status-strip"><span>MODE: <b id="modeReadout">ADDRESS</b></span><span>HALT: <b id="haltReadout">YES</b></span><span>INTERRUPTS: <b id="interruptReadout">DISABLED</b></span><span>LAST: <b id="lastOperation">POWER ON</b></span></div>
+        <div class="terminal"><div class="terminal-bar">ASN MONITOR <span>FRONT PANEL REFERENCE · KEYBOARD: R/S/H/L/E/D</span></div><pre id="terminal">BOOT ROM ................. OK
+MEMORY MAP ............... 64 KB
 FRONT PANEL .............. READY
-CPU MODE ................. 64-BIT
+CPU MODE ................. 64-BIT REFERENCE
 LEGACY MODEL ............. 8080 COMPATIBILITY
 
-Type STEP to advance the reference panel.</pre></div>
+Set ADDRESS or DATA mode, toggle bits, then use LOAD / EXAMINE / DEPOSIT.</pre></div>
       </div>
     </section>
 
     <section id="architecture" class="section">
       <div class="section-head"><span>03</span><h2>Architecture</h2></div>
-      <div class="architecture">
-        <div class="layer"><span>06</span><div><b>USER INTERFACE</b><p>Browser console · documentation · monitoring</p></div></div>
-        <div class="layer"><span>05</span><div><b>APPLICATION / RUNTIME</b><p>Hosted C reference · Python reference model</p></div></div>
-        <div class="layer"><span>04</span><div><b>FIRMWARE</b><p>Boot path · hardware abstraction · diagnostics</p></div></div>
-        <div class="layer"><span>03</span><div><b>COMPUTE</b><p>64-bit target architecture · legacy 8080 study</p></div></div>
-        <div class="layer"><span>02</span><div><b>MEMORY / I/O</b><p>Framebuffer · storage · expansion · front panel</p></div></div>
-        <div class="layer"><span>01</span><div><b>HARDWARE</b><p>CPU / SoC · PCB · power · display · peripherals</p></div></div>
-      </div>
+      <div class="architecture"><div class="layer"><span>06</span><div><b>USER INTERFACE</b><p>Browser console · documentation · monitoring · front panel controls</p></div></div><div class="layer"><span>05</span><div><b>APPLICATION / RUNTIME</b><p>Hosted C reference · Python reference model · monitor commands</p></div></div><div class="layer"><span>04</span><div><b>FIRMWARE</b><p>Boot path · hardware abstraction · diagnostics · reset vector</p></div></div><div class="layer"><span>03</span><div><b>COMPUTE</b><p>64-bit target architecture · legacy 8080 study · registers and flags</p></div></div><div class="layer"><span>02</span><div><b>MEMORY / I/O</b><p>64 KB reference memory · framebuffer · storage · expansion · front panel</p></div></div><div class="layer"><span>01</span><div><b>HARDWARE</b><p>CPU / SoC · PCB · power · display · peripherals · switches and LEDs</p></div></div></div>
     </section>
 
     <section id="build" class="section build-section">
       <div class="section-head"><span>04</span><h2>Build the platform</h2></div>
-      <div class="build-grid">
-        <div><h3>Native C</h3><pre><code>cd v2026
+      <div class="build-grid"><div><h3>Native C</h3><pre><code>cd v2026
 make clean
-make test</code></pre></div>
-        <div><h3>CMake</h3><pre><code>cmake -S v2026 -B v2026/cmake-build
+make test</code></pre></div><div><h3>CMake</h3><pre><code>cmake -S v2026 -B v2026/cmake-build
 cmake --build v2026/cmake-build
-ctest --test-dir v2026/cmake-build --output-on-failure</code></pre></div>
-        <div><h3>Python reference</h3><pre><code>cd v2026
-python3 python/altair2026.py --self-test</code></pre></div>
-      </div>
-      <div class="notice"><b>Engineering status:</b> the hosted software is a reference implementation. Hardware files and component plans are design-study artifacts and require electrical, thermal, signal-integrity and manufacturing validation before fabrication.</div>
+ctest --test-dir v2026/cmake-build --output-on-failure</code></pre></div><div><h3>Python reference</h3><pre><code>cd v2026
+python3 python/altair2026.py --self-test</code></pre></div></div>
+      <div class="notice"><b>Engineering status:</b> the browser console is a deterministic reference simulation. Hardware files and component plans are design-study artifacts and require electrical, thermal, signal-integrity and manufacturing validation before fabrication.</div>
     </section>
   </main>
-
   <footer><span>ASN COMPUTER · ALTAIR 8800 / 2026</span><a href="https://github.com/ArkansasIo/asn-computer" target="_blank" rel="noreferrer">Source on GitHub ↗</a></footer>
   <script src="app.js"></script>
 </body>
