@@ -27,6 +27,6 @@ int altair_self_test(struct altair_state *s) {
     if (s->display_mode != ALTAIR_DISPLAY_WIDTH) return 0;
     if (ALTAIR_CPU_BITS != 64u || ALTAIR_ADDR_BITS != 64u) return 0;
     if (ALTAIR_DISPLAY_WIDTH != 3840u || ALTAIR_DISPLAY_HEIGHT != 2160u) return 0;
-    if (altair_framebuffer_bytes() != 33177600u) return 0;
+    if (altair_framebuffer_bytes() != UINT64_C(33177600)) return 0;
     return 1;
 }
