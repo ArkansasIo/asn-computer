@@ -2,25 +2,41 @@ name: ALTAIR 2026 CI
 
 on:
   push:
-    paths: ['v2026/**']
+    paths:
+      - "v2026/**"
   pull_request:
-    paths: ['v2026/**']
+    paths:
+      - "v2026/**"
+  workflow_dispatch:
 
 jobs:
-  python:
+  hosted-c:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run C tests
+        working-directory: v2026
+        run: |
+          make clean
+          make
+          ./build/altair2026
+          cc -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude tests/test_platform.c src/platform.c -o build/test_platform
+          ./build/test_platform
+      - name: CMake build
+        run: |
+          cmake -S v2026 -B v2026/cmake-build
+          cmake --build v2026/cmake-build
+          ctest --test-dir v2026/cmake-build --output-on-failure
+
+  python-reference:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - run: python v2026/python/altair2026.py --self-test
-
-  assembly:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update
-      - run: sudo apt-get install -y nasm gcc make
-      - working-directory: v2026
-        run: make
+          python-version: "3.12"
+      - name: Test reference model
+        working-directory: v2026
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py'
+          python python/altair2026.py --self-test
